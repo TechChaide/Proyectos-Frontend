@@ -28,9 +28,13 @@ export async function fetchWithAuth(
   const { skipAuth = false, ...restOptions } = options;
 
   // Realizar la petición con credenciales (incluye httpOnly cookies)
+  // cache: 'no-store' evita que el navegador reutilice/valide contra una respuesta
+  // en caché (revalidaciones 304 que el backend puede responder sin reflejar cambios
+  // recientes) — siempre trae el dato más actual del servidor.
   const response = await fetch(url, {
     ...restOptions,
     credentials: skipAuth ? 'omit' : 'include', // 'include' para enviar cookies
+    cache: restOptions.cache ?? 'no-store',
   });
 
   // Si error 401 (Unauthorized), limpiar auth local y redirigir a login

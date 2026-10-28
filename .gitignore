@@ -3,6 +3,12 @@ dist/
 build/
 .next/
 out/
-.env.local
 .vscode/
 package-lock.json
+referencia/Gantt.png
+referencia/Logical Model_v6.png
+referencia/page.tsx
+referencia/Rubrica para MR.png
+referencia/Rubrica para MSP y PI.png
+referencia/components/form.tsx
+referencia/components/table.tsx

@@ -22,9 +22,10 @@ AccordionItem.displayName = "AccordionItem"
 
 const AccordionTrigger = React.forwardRef<
   React.ElementRef<typeof AccordionPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Trigger>
->(({ className, children, ...props }, ref) => (
-  <AccordionPrimitive.Header className="flex">
+  React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Trigger> & { headerLeading?: React.ReactNode }
+>(({ className, children, headerLeading, ...props }, ref) => (
+  <AccordionPrimitive.Header className="flex items-center gap-2">
+    {headerLeading}
     <AccordionPrimitive.Trigger
       ref={ref}
       className={cn(

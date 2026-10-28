@@ -16,7 +16,13 @@ import {
     TooltipProvider,
     TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { ChevronsUpDown, BookUser, Shield, Users, Settings, Building, MenuSquare, UserCog, UserPlus, Minus, LogOut, CircleUser, AppWindow } from 'lucide-react';
+import {
+    ChevronsUpDown, BookUser, Shield, Users, Settings, Building, MenuSquare, UserCog, UserPlus, Minus, LogOut, CircleUser, AppWindow,
+    FolderKanban, Folder, FolderOpen, ClipboardList, ClipboardCheck, ListChecks, PackageSearch, Package, Boxes,
+    BarChart3, PieChart, LineChart, FileBarChart, FileText, Layers, CalendarRange,
+} from 'lucide-react';
+// Toda la librería de iconos, para resolver cualquier nombre que envíe el backend por menú.
+import * as LucideIcons from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { menuService } from '@/services/seguridades/menu.service';
@@ -51,6 +57,23 @@ const iconMap: Record<string, React.ComponentType<any>> = {
     UserPlus,
     CircleUser,
     AppWindow,
+    // Íconos adicionales para los módulos de Proyectos/Recursos/Estados/Reportes
+    FolderKanban,
+    Folder,
+    FolderOpen,
+    ClipboardList,
+    ClipboardCheck,
+    ListChecks,
+    PackageSearch,
+    Package,
+    Boxes,
+    BarChart3,
+    PieChart,
+    LineChart,
+    FileBarChart,
+    FileText,
+    Layers,
+    CalendarRange,
 };
 
 // Construir árbol de menú a partir de un array plano basándose en padre-hijo
@@ -164,7 +187,9 @@ function filterActive(nodes: MenuNode[]): MenuNode[] {
 // Transformar árbol backend -> estructura esperada por RecursiveMenu
 function toRecursiveItems(nodes: MenuNode[]): any[] {
     return nodes.map(n => {
-        const IconComp = iconMap[n.icono] || Shield;
+        // Resuelve el icono por nombre: primero el mapa local, luego cualquier icono de lucide, o Shield.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const IconComp = iconMap[n.icono] || (LucideIcons as any)[n.icono] || Shield;
         const hasChildren = !!(n.children && n.children.length);
         // Reglas:
         // '.' => raíz (no navegable)

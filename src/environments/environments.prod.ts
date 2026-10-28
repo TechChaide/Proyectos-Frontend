@@ -5,9 +5,9 @@
 
 export const environment = {
     production: true,
-    nombreAplicacion: "APP_BASE",
+    nombreAplicacion: "APP_PROYECTOS",
 
-    aplicaciones: ["APP_BASE", "APP_CERTIFICADOS_CALIDAD", "APP_IT_ACTIVOS"],
+    aplicaciones: ["APP_PROYECTOS"],
 
     basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
 
@@ -23,6 +23,7 @@ export const environment = {
 
 
     /////////////////////////////////////Api Propia de la Aplicación
+    apiAPP:'https://apps.chaide.com/proyectosBA',
 
 
     tituloSistema: 'SISTEMA INTEGRADO DE SEGURIDADES',
