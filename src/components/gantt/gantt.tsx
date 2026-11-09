@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     addDays,
     eachDayOfInterval,
@@ -18,7 +18,8 @@ import {
     startOfMonth,
 } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { Activity, AlertTriangle, CheckCircle2, Clock, CircleDot, CornerDownRight, Layers, Link2 } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, Clock, CircleDot, CornerDownRight, Layers, Link2, Maximize2, Minimize2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { aFechaSegura, formatearFecha, hoyEcuador } from '@/lib/fechas';
@@ -67,7 +68,8 @@ interface GanttProps {
 const MS_DIA = 24 * 60 * 60 * 1000;
 const ANCHO_NOMBRES = 280;
 const ALTO_FILA = 44;
-const ALTO_BARRA = 18;
+const ALTO_BARRA = 20;
+const NAVY = '#1f3a5f';
 const ALTO_TITULO_GRUPO = 32;
 type Escala = 'dia' | 'semana' | 'mes';
 const ANCHO_COLUMNA: Record<Escala, number> = { dia: 34, semana: 64, mes: 110 };
@@ -77,7 +79,7 @@ const TINTA_SECUNDARIA = '#52514e';
 const CUADRICULA = '#e1e0d9';
 const TRACK_CONTENEDOR = '#e9e8e3';
 const ACENTO_BLOQUE = '#8a8780';      // acento del bloque de actividad compartida
-const CONECTOR = '#9a9790';           // línea de dependencia
+const CONECTOR = '#334155';           // línea de dependencia (tinta oscura, como un diagrama técnico)
 
 const ICONO_ESTADO: Record<EstadoVisual, React.ComponentType<{ className?: string; style?: React.CSSProperties }>> = {
     completada: CheckCircle2,
@@ -95,15 +97,18 @@ const ayudaSemana = (lunes: Date) =>
 // izquierda. Con actividades consecutivas (casi sin separación) la flecha no cabe por el lado: se sale del final de
 // la predecesora y baja (o sube) hasta apoyarse sobre el comienzo de la barra siguiente.
 const SEPARACION_MINIMA_CODO = 20;
+const RADIO_CODO = 6;
 const trazarConector = (xFin: number, yPred: number, xIni: number, yDep: number): string => {
+    const dir = yDep >= yPred ? 1 : -1;
     if (xIni - xFin >= SEPARACION_MINIMA_CODO) {
         const xCodo = xIni - 10;
-        return `M ${xFin} ${yPred} H ${xCodo} V ${yDep} H ${xIni - 1}`;
+        const r = Math.min(RADIO_CODO, Math.abs(yDep - yPred) / 2, xCodo - xFin);
+        return `M ${xFin} ${yPred} H ${xCodo - r} Q ${xCodo} ${yPred} ${xCodo} ${yPred + dir * r} V ${yDep - dir * r} Q ${xCodo} ${yDep} ${xCodo + r} ${yDep} H ${xIni - 1}`;
     }
-    const xBajada = Math.max(xFin, xIni) + 6;
-    const sentido = yDep >= yPred ? 1 : -1;
-    const yBorde = yDep - sentido * (ALTO_BARRA / 2 + 1);
-    return `M ${xFin} ${yPred} H ${xBajada} V ${yBorde}`;
+    const xBajada = Math.max(xFin, xIni) + 8;
+    const yBorde = yDep - dir * (ALTO_BARRA / 2 + 1);
+    const r = Math.min(RADIO_CODO, Math.abs(yBorde - yPred) / 2);
+    return `M ${xFin} ${yPred} H ${xBajada - r} Q ${xBajada} ${yPred} ${xBajada} ${yPred + dir * r} V ${yBorde}`;
 };
 
 const elegirEscala = (dias: number): Escala => (dias <= 45 ? 'dia' : dias <= 200 ? 'semana' : 'mes');
@@ -116,7 +121,25 @@ interface Tooltip {
 
 export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcion, vacio = 'No hay actividades con fechas para mostrar.', mostrarAvance = true }: GanttProps) {
     const contenedorRef = useRef<HTMLDivElement>(null);
+    const tarjetaRef = useRef<HTMLDivElement>(null);
     const [tooltip, setTooltip] = useState<Tooltip | null>(null);
+    // Pantalla completa (Fullscreen API): el diagrama ocupa toda la pantalla para revisarlo con comodidad.
+    const [pantallaCompleta, setPantallaCompleta] = useState(false);
+    const [puedeExpandir, setPuedeExpandir] = useState(false);
+
+    useEffect(() => {
+        setPuedeExpandir(typeof document !== 'undefined' && !!document.fullscreenEnabled);
+        const alCambiar = () => setPantallaCompleta(document.fullscreenElement === tarjetaRef.current);
+        document.addEventListener('fullscreenchange', alCambiar);
+        return () => document.removeEventListener('fullscreenchange', alCambiar);
+    }, []);
+
+    const alternarPantallaCompleta = async () => {
+        try {
+            if (document.fullscreenElement) await document.exitFullscreen();
+            else await tarjetaRef.current?.requestFullscreen();
+        } catch { /* el navegador rechazó el cambio: no hay nada que hacer */ }
+    };
 
     // Una fila con el fin antes del inicio (dato transitorio al editar fechas) se dibuja de un solo día
     // en vez de producir una barra de ancho negativo o estirar la escala.
@@ -270,7 +293,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                 <>
                     {/* Zona de hover más grande que la marca */}
                     <div className="absolute cursor-default" style={{ left: x, width: ancho, top: 4, bottom: 4 }} {...eventos} />
-                    <div className="pointer-events-none absolute overflow-hidden rounded" style={{ left: x, width: ancho, top, height: ALTO_BARRA, backgroundColor: colorTrack }}>
+                    <div className="pointer-events-none absolute overflow-hidden rounded-md" style={{ left: x, width: ancho, top, height: ALTO_BARRA, backgroundColor: colorTrack, boxShadow: `inset 0 0 0 1px ${colorFill}55` }}>
                         <div className="h-full" style={{ width: `${progreso * 100}%`, backgroundColor: colorFill }} />
                     </div>
                     {mostrarAvance && (
@@ -287,8 +310,12 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
             <>
                 <div className="absolute cursor-default" style={{ left: x, width: ancho, top: 4, bottom: 4 }} {...eventos} />
                 <div
-                    className="pointer-events-none absolute rounded"
-                    style={{ left: x, width: ancho, top, height: ALTO_BARRA, backgroundColor: colorBarra }}
+                    className="pointer-events-none absolute rounded-md"
+                    style={{
+                        left: x, width: ancho, top, height: ALTO_BARRA, backgroundColor: colorBarra,
+                        // Relieve sutil: brillo superior y sombra corta, para que la barra "se asiente" sobre la franja.
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.28), 0 1px 2px rgba(15,23,42,0.28)',
+                    }}
                 />
                 {fila.etiquetaFin && (
                     <span className="pointer-events-none absolute whitespace-nowrap text-xs font-medium tabular-nums" style={{ left: x + ancho + 8, top: top + 1, color: TINTA_SECUNDARIA }}>
@@ -300,17 +327,25 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
     };
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle className="text-base">{titulo}</CardTitle>
-                {descripcion && <CardDescription>{descripcion}</CardDescription>}
+        <Card ref={tarjetaRef} className={cn(pantallaCompleta && 'overflow-y-auto rounded-none border-0')}>
+            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                <div className="space-y-1.5">
+                    <CardTitle className="text-base">{titulo}</CardTitle>
+                    {descripcion && <CardDescription>{descripcion}</CardDescription>}
+                </div>
+                {puedeExpandir && escala && (
+                    <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={alternarPantallaCompleta}>
+                        {pantallaCompleta ? <Minimize2 className="mr-2 h-4 w-4" /> : <Maximize2 className="mr-2 h-4 w-4" />}
+                        {pantallaCompleta ? 'Salir de pantalla completa' : 'Pantalla completa'}
+                    </Button>
+                )}
             </CardHeader>
             <CardContent>
                 {!escala ? (
                     <p className="py-8 text-center text-sm text-muted-foreground">{vacio}</p>
                 ) : (
                     <div ref={contenedorRef} className="relative">
-                        <div className="overflow-x-auto rounded-md border" style={{ borderColor: CUADRICULA }}>
+                        <div className={cn('overflow-x-auto rounded-md border', pantallaCompleta && 'max-h-[calc(100vh-10rem)] overflow-y-auto')} style={{ borderColor: CUADRICULA }}>
                             <div style={{ width: ANCHO_NOMBRES + escala.anchoLinea, minWidth: '100%' }}>
                                 {/* Encabezado: banda de meses/años + escala */}
                                 <div className="flex border-b bg-muted/40" style={{ borderColor: CUADRICULA }}>
@@ -355,11 +390,6 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                                 ))}
                                             </div>
                                         )}
-                                        {escala.xHoy !== null && (
-                                            <span className="absolute bottom-0.5 z-10 -translate-x-1/2 rounded bg-foreground px-1.5 py-px text-[10px] font-semibold text-background" style={{ left: escala.xHoy }}>
-                                                Hoy
-                                            </span>
-                                        )}
                                     </div>
                                 </div>
 
@@ -372,8 +402,8 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                             height={layout.alto}
                                         >
                                             <defs>
-                                                <marker id="gantt-flecha" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
-                                                    <path d="M0,0 L6,3 L0,6 Z" fill={CONECTOR} />
+                                                <marker id="gantt-flecha" markerWidth="8" markerHeight="8" refX="6" refY="3.5" orient="auto">
+                                                    <path d="M0,0 L7,3.5 L0,7 Z" fill={CONECTOR} />
                                                 </marker>
                                             </defs>
                                             {conectores.map((c) => (
@@ -382,7 +412,8 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                                     d={c.d}
                                                     fill="none"
                                                     stroke={CONECTOR}
-                                                    strokeWidth={1.5}
+                                                    strokeWidth={1.6}
+                                                    strokeLinejoin="round"
                                                     markerEnd="url(#gantt-flecha)"
                                                 />
                                             ))}
@@ -393,8 +424,8 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                         <div key={grupo.id}>
                                             {grupo.titulo && (
                                                 <div className="flex border-b bg-muted/20" style={{ borderColor: CUADRICULA, height: ALTO_TITULO_GRUPO }}>
-                                                    <div className="sticky left-0 z-10 flex shrink-0 items-center border-r bg-muted/20 px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur" style={{ width: ANCHO_NOMBRES, borderColor: CUADRICULA }}>
-                                                        <span className="line-clamp-1">{grupo.titulo}</span>
+                                                    <div className="sticky left-0 z-10 flex shrink-0 items-center border-r bg-muted/20 px-3 backdrop-blur" style={{ width: ANCHO_NOMBRES, borderColor: CUADRICULA }}>
+                                                        <span className="line-clamp-1 rounded px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white" style={{ backgroundColor: NAVY }}>{grupo.titulo}</span>
                                                     </div>
                                                     <div style={{ width: escala.anchoLinea }} />
                                                 </div>
@@ -435,6 +466,8 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                                             </div>
                                                         </div>
                                                         <div className={cn('relative', enBloque && 'bg-muted/10')} style={{ width: escala.anchoLinea }}>
+                                                            {/* Franja de la fila: la barra se asienta sobre ella */}
+                                                            <div className="absolute inset-x-0 rounded-md bg-muted/50" style={{ top: 6, bottom: 6 }} />
                                                             <div className="absolute inset-0 flex">
                                                                 {escala.columnas.map((c) => (
                                                                     <div key={c.key} className={cn('shrink-0 border-l', c.finDeSemana && 'bg-muted/40')} style={{ width: ANCHO_COLUMNA[escala.tipo], borderColor: CUADRICULA }} />
@@ -450,6 +483,15 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                             })}
                                         </div>
                                     ))}
+
+                                    {/* Marca "Hoy" al pie de la línea punteada */}
+                                    {escala.xHoy !== null && (
+                                        <div className="relative h-7 border-t" style={{ marginLeft: ANCHO_NOMBRES, width: escala.anchoLinea, borderColor: CUADRICULA }}>
+                                            <span className="absolute top-1 -translate-x-1/2 rounded-full px-2.5 py-0.5 text-[10px] font-semibold text-white" style={{ left: escala.xHoy, backgroundColor: NAVY }}>
+                                                Hoy
+                                            </span>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>

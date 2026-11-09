@@ -11,7 +11,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form } from '@/components/ui/form';
-import type { Area, TipoProyecto, Responsable, Estado, Solicitud, EstadoSolicitud, AreaSolicitud, Proyecto, Actividad, FichaSocialHistorica, Resultado, TipoRecurso, Recurso, ProyectoRecurso, PilarEstrategico, Okr } from '@/types/interfaces';
+import type { Area, TipoProyecto, Responsable, Estado, Solicitud, EstadoSolicitud, AreaSolicitud, Proyecto, Actividad, FichaSocialHistorica, Resultado, TipoRecurso, Recurso, ProyectoRecurso, PilarEstrategico, Okr, Objetivo } from '@/types/interfaces';
 import { procesoService } from '@/services/proyectos/proceso.service';
 import { resultadoService } from '@/services/proyectos/resultado.service';
 import { tipoRecursoService } from '@/services/proyectos/tipoRecurso.service';
@@ -28,6 +28,7 @@ import { proyectoService } from '@/services/proyectos/proyecto.service';
 import { actividadService } from '@/services/proyectos/actividad.service';
 import { pilarEstrategicoService } from '@/services/proyectos/pilarEstrategico.service';
 import { okrService } from '@/services/proyectos/okr.service';
+import { objetivoService } from '@/services/proyectos/objetivo.service';
 import StepperHeader from './components/stepper-header';
 import StepArea from './components/step-area';
 import StepProyecto from './components/step-proyecto';
@@ -52,7 +53,7 @@ const PASO_FINAL = 4;
 
 const stepFields: Record<number, (keyof ProyectoWizardValues)[]> = {
     1: ['codigo_proceso'],
-    2: ['codigo_tipo_proyecto', 'nombre_proyecto', 'descripcion_proyecto', 'responsable_proyecto', 'objetivo_principal', 'fecha_inicio', 'fecha_fin'],
+    2: ['codigo_tipo_proyecto', 'nombre_proyecto', 'descripcion_proyecto', 'responsable_proyecto', 'objetivo_principal', 'objetivos', 'fecha_inicio', 'fecha_fin'],
     3: ['recursos'],
 };
 
@@ -68,6 +69,8 @@ interface EditContext {
     codigoResultadoEsperado: number | null;
     /** Asignaciones de recurso (proyecto_recurso) originales, para eliminar las que se quiten. */
     proyectoRecursoCodigosOriginales: number[];
+    /** Objetivos (tabla objetivo) activos originales, para desactivar los que se quiten. */
+    objetivoCodigosOriginales: number[];
     fechaInicioOriginal: string;
     fechaFinOriginal: string;
 }
@@ -167,12 +170,15 @@ export default function ProyectoCreationPage() {
                         return;
                     }
 
-                    const [areaSolicitudesResp, actividadesResp, resultadosResp, proyRecResp] = await Promise.all([
+                    const [areaSolicitudesResp, actividadesResp, resultadosResp, proyRecResp, objetivosResp] = await Promise.all([
                         areaSolicitudService.getAll(),
                         actividadService.getAll(),
                         resultadoService.getAll(),
                         proyectoRecursoService.getAll(),
+                        // Objetivos del proyecto (POST /api/objetivo/buscar). Si falla, el resto del proyecto igual carga.
+                        objetivoService.getByProyecto(codigoProyectoNum).catch(() => ({ data: [] as Objetivo[] })),
                     ]);
+                    const objetivosProyecto = (objetivosResp.data || []).filter((o) => o.estado === 'A');
 
                     const resultadoEsperado = (resultadosResp.data || []).find(
                         (r) => r.codigo_proyecto === codigoProyectoNum && normalize(r.categoria_resultado || '').includes('esper')
@@ -216,6 +222,7 @@ export default function ProyectoCreationPage() {
                         actividadPadreMap: new Map(actividadesExistentes.map((a) => [a.codigo_actividad, a.codigo_actividad_padre ?? null])),
                         codigoResultadoEsperado: resultadoEsperado?.codigo_resultado ?? null,
                         proyectoRecursoCodigosOriginales: asignacionesProyecto.map((pr) => pr.codigo_proyecto_recurso),
+                        objetivoCodigosOriginales: objetivosProyecto.map((o) => o.codigo_objetivo),
                         fechaInicioOriginal,
                         fechaFinOriginal,
                     });
@@ -231,6 +238,7 @@ export default function ProyectoCreationPage() {
                         responsable_proyecto: proyectoExistente.responsable_proyecto,
                         objetivo_principal: proyectoExistente.objetivo_principal,
                         resultados_esperados: resultadoEsperado?.descripcion_resultado ?? '',
+                        objetivos: objetivosProyecto.map((o) => ({ codigo_objetivo: o.codigo_objetivo, descripcion_objetivo: o.descripcion_objetivo })),
                         recursos: recursosRows,
                         fecha_inicio: fechaInicioOriginal,
                         fecha_fin: fechaFinOriginal,
@@ -439,6 +447,28 @@ export default function ProyectoCreationPage() {
             } as Resultado);
         };
 
+        // Guarda los objetivos específicos con el codigo_proyecto que devolvió el backend al crear/actualizar el
+        // proyecto (nuevos = codigo 0). En edición, los que se quitaron se desactivan (DELETE inactiva).
+        const guardarObjetivos = async (codigoProyecto: number) => {
+            const vigentes = new Set<number>();
+            for (const o of values.objetivos || []) {
+                const resp = await objetivoService.save({
+                    codigo_objetivo: o.codigo_objetivo || 0,
+                    codigo_proyecto: codigoProyecto,
+                    descripcion_objetivo: o.descripcion_objetivo.trim(),
+                    estado: 'A',
+                    usuario_modificacion: usuario,
+                    fecha_modificacion: now,
+                } as Objetivo);
+                vigentes.add(resp.data.codigo_objetivo);
+            }
+            if (editContext) {
+                for (const codigo of editContext.objetivoCodigosOriginales) {
+                    if (!vigentes.has(codigo)) await objetivoService.delete(codigo);
+                }
+            }
+        };
+
         // Guarda los recursos del proyecto: crea tipos/recursos nuevos al vuelo y registra las
         // asignaciones (proyecto_recurso). En edición elimina las que se quitaron.
         const guardarRecursos = async (codigoProyecto: number) => {
@@ -498,6 +528,9 @@ export default function ProyectoCreationPage() {
                     usuario_modificacion: usuario,
                     fecha_modificacion: now,
                 } as Proyecto);
+
+                stage = 'los objetivos';
+                await guardarObjetivos(editContext.codigoProyecto);
 
                 // Actualiza/crea actividades y elimina las que el usuario quitó del plan
                 stage = 'las actividades';
@@ -579,7 +612,11 @@ export default function ProyectoCreationPage() {
             } as Proyecto);
             const codigoProyecto = proyectoResp.data.codigo_proyecto;
 
-            // 5. Actividades del proyecto
+            // 5. Objetivos específicos (con el codigo_proyecto de la respuesta de creación)
+            stage = 'los objetivos';
+            await guardarObjetivos(codigoProyecto);
+
+            // 6. Actividades del proyecto
             stage = 'las actividades';
             await guardarActividades(codigoProyecto);
 

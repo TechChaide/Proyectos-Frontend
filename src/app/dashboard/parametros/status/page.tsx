@@ -70,7 +70,7 @@ export default function EstadoPage() {
     const showTable = hasFetched && !isFormOpen && records.length > 0;
 
     return (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4 p-4 md:p-6">
             <Card>
                 <CardHeader>
                     <CardTitle>Gestión de Estados</CardTitle>

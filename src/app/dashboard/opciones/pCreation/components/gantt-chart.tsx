@@ -29,7 +29,7 @@ const PALETA_ACTIVIDADES = [
     '#c2410c', // naranja quemado
     '#4d7c0f', // oliva
 ];
-const colorDeActividad = (i: number) => PALETA_ACTIVIDADES[i % PALETA_ACTIVIDADES.length];
+export const colorDeActividad = (i: number) => PALETA_ACTIVIDADES[i % PALETA_ACTIVIDADES.length];
 
 // Vista previa del plan en el wizard: cada actividad con su propio color y, si es compartida, una fila
 // por participante con su % de participación. Las dependencias conectan una actividad con la siguiente.

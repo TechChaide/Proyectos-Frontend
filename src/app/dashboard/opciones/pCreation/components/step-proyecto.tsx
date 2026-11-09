@@ -6,8 +6,9 @@ import { useWatch, type UseFormReturn } from 'react-hook-form';
 import type { FichaSocialHistorica, Okr, PilarEstrategico, Proyecto, TipoProyecto } from '@/types/interfaces';
 import { Input } from '@/components/ui/input';
 import EmployeeMultiCombobox from './employee-multi-combobox';
+import ObjetivosEditor from './objetivos-editor';
 import DateRangePicker from './date-range-picker';
-import { aFecha, finDeAnio, formatearFecha, hoyEcuador, limiteCalendario } from '@/lib/fechas';
+import { aFecha, formatearFecha, hoyEcuador, limiteCalendario } from '@/lib/fechas';
 import { Textarea } from '@/components/ui/textarea';
 import {
     FormControl,
@@ -115,13 +116,10 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
 
     const fechaError = form.formState.errors.fecha_inicio ?? form.formState.errors.fecha_fin;
 
-    // El calendario ofrece desde hoy hasta el 31/12 del año siguiente; pero un proyecto no puede
-    // cruzar de año: una vez elegido el inicio, el fin se limita al 31/12 de ese mismo año.
+    // El calendario ofrece desde hoy hasta el 31/12 del año siguiente. Un proyecto puede cruzar de año dentro
+    // de ese límite (p. ej. empezar en noviembre y terminar en 2027).
     const limite = limiteCalendario();
-    const inicioElegido = aFecha(fechaInicio);
-    const maxBase = inicioElegido && !fechaFin
-        ? new Date(Math.min(limite.getTime(), finDeAnio(inicioElegido).getTime()))
-        : limite;
+    const maxBase = limite;
     const minBase = isEditMode ? undefined : hoyEcuador();
 
     // Si hay proyecto padre, el rango se acota además al rango del padre.
@@ -311,7 +309,7 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                     <p className="text-xs text-muted-foreground">
                         {padreSel && padreInicio && padreFin
                             ? `Debe quedar dentro del proyecto padre "${padreSel.nombre_proyecto}" (${formatearFecha(padreInicio)} - ${formatearFecha(padreFin)}).`
-                            : 'El proyecto y todas sus actividades deben quedar dentro de un mismo año calendario.'}
+                            : `El proyecto y sus actividades pueden extenderse hasta el ${formatearFecha(limite)}.`}
                     </p>
                     {fechaError && (
                         <p className="text-sm font-medium text-destructive">{fechaError.message}</p>
@@ -347,6 +345,8 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                         </FormItem>
                     )}
                 />
+
+                <ObjetivosEditor form={form} />
 
                 <FormField
                     control={form.control}

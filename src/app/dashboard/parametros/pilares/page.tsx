@@ -99,6 +99,7 @@ export default function PilaresPage() {
     };
 
     return (
+        <div className="p-4 md:p-6">
         <Card>
             {/* Cabecera: título, resumen en una línea y acción principal */}
             <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -205,5 +206,6 @@ export default function PilaresPage() {
                 onSaved={handleOkrGuardado}
             />
         </Card>
+        </div>
     );
 }

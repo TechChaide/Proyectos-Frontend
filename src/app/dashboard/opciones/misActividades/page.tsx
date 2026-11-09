@@ -67,6 +67,7 @@ import AvanceProyectos from './components/avance-proyectos';
 import ProcesoSelector from '../proyectos/components/proceso-selector';
 import type { AreaBlock } from '../proyectos/types';
 import { esResponsableDelProyecto, resolverProcesoPorProyecto } from '../proyectos/area-utils';
+import ProyectoObjetivosPopover from '../proyectos/components/proyecto-objetivos-popover';
 import { ahoraSQL, formatearFecha, hoyEcuador } from '@/lib/fechas';
 
 // Equipo: vencidas primero, luego en plazo, luego las cerradas.
@@ -810,6 +811,10 @@ export default function MisActividadesPage() {
                                     <FolderKanban className="h-3.5 w-3.5 shrink-0" />
                                     <span className="truncate">{proyectoNombre}</span>
                                 </div>
+                                <ProyectoObjetivosPopover
+                                    codigoProyecto={actividad.codigo_proyecto}
+                                    objetivoPrincipal={proyectos.find((x) => x.codigo_proyecto === actividad.codigo_proyecto)?.objetivo_principal}
+                                />
                             </CardHeader>
                             <CardContent className="flex flex-col gap-3">
                                 <p className="line-clamp-2 text-sm text-muted-foreground">

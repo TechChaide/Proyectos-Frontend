@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
     Dialog,
     DialogContent,
@@ -18,23 +18,13 @@ import {
     TableHead,
     TableCell,
 } from '@/components/ui/table';
-import type { FichaSocialHistorica, Responsable, ProyectoRecurso, Recurso, TipoRecurso, Resultado, Objetivo, Okr, PilarEstrategico } from '@/types/interfaces';
+import type { FichaSocialHistorica, Responsable } from '@/types/interfaces';
 import type { ProyectoView } from '../types';
+import { useProyectoDetalle } from '../use-proyecto-detalle';
 import { formatearFecha } from '@/lib/fechas';
 import { actividadesPrincipales, hijosPorPadre, participacionEnteraPorActividad } from '@/lib/actividades';
-import { proyectoRecursoService } from '@/services/proyectos/proyectoRecurso.service';
-import { recursoService } from '@/services/proyectos/recurso.service';
-import { tipoRecursoService } from '@/services/proyectos/tipoRecurso.service';
-import { resultadoService } from '@/services/proyectos/resultado.service';
-import { objetivoService } from '@/services/proyectos/objetivo.service';
-import { okrService } from '@/services/proyectos/okr.service';
-import { pilarEstrategicoService } from '@/services/proyectos/pilarEstrategico.service';
 
-const num = (s?: string) => { const n = parseFloat((s || '').replace(',', '.')); return Number.isNaN(n) ? 0 : n; };
 const money = (n: number) => `$${n.toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const norm = (v: string) => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-
-interface RecursoFila { nombre: string; tipo: string; costo: number; valor: number; subtotal: number; }
 
 interface ProyectoDetailDialogProps {
     view: ProyectoView | null;
@@ -54,64 +44,8 @@ export default function ProyectoDetailDialog({ view, onOpenChange, responsables,
         return persona?.NOMBRE || responsable.codigo_empleado;
     };
 
-    // Datos extra (recursos y resultado esperado) que se cargan al abrir el detalle de un proyecto.
-    const [recursos, setRecursos] = useState<RecursoFila[]>([]);
-    const [resultadoEsperado, setResultadoEsperado] = useState('');
-    const [objetivos, setObjetivos] = useState<Objetivo[]>([]);
-    const [alineacion, setAlineacion] = useState<{ pilar: string; okr: string } | null>(null);
-    const codigoProyecto = view?.proyecto.codigo_proyecto ?? null;
-    const codigoOkr = view?.proyecto.codigo_okr ?? null;
-
-    useEffect(() => {
-        if (!codigoProyecto) { setRecursos([]); setResultadoEsperado(''); setObjetivos([]); setAlineacion(null); return; }
-        let cancelado = false;
-        (async () => {
-            const settled = await Promise.allSettled([
-                proyectoRecursoService.getAll(),
-                recursoService.getAll(),
-                tipoRecursoService.getAll(),
-                resultadoService.getAll(),
-                objetivoService.getByProyecto(codigoProyecto),
-                codigoOkr ? okrService.getById(codigoOkr) : Promise.resolve(null),
-            ]);
-            if (cancelado) return;
-            const datos = <T,>(r: PromiseSettledResult<{ data?: T[] }>): T[] => (r.status === 'fulfilled' ? (r.value.data || []) : []);
-            const prList = datos<ProyectoRecurso>(settled[0]);
-            const recList = datos<Recurso>(settled[1]);
-            const tipoList = datos<TipoRecurso>(settled[2]);
-            const resultList = datos<Resultado>(settled[3]);
-            const recMap = new Map(recList.map((r) => [r.codigo_recurso, r]));
-            const tipoMap = new Map(tipoList.map((t) => [t.codigo_tipo_recurso, t.nombre_recurso]));
-            const filasRec = prList
-                .filter((pr) => pr.codigo_proyecto === codigoProyecto && pr.estado === 'A')
-                .map((pr) => {
-                    const rec = recMap.get(pr.codigo_recurso);
-                    const costo = num(rec?.costo);
-                    const valor = num(pr.valor_recurso);
-                    return { nombre: rec?.nombre_recurso || '—', tipo: tipoMap.get(rec?.codigo_tipo_recurso ?? 0) || '', costo, valor, subtotal: costo * valor };
-                });
-            setRecursos(filasRec);
-            const esperado = resultList.find((r) => r.codigo_proyecto === codigoProyecto && norm(r.categoria_resultado).includes('esper'));
-            setResultadoEsperado(esperado?.descripcion_resultado || '');
-            setObjetivos(datos<Objetivo>(settled[4]).filter((o) => o.estado === 'A'));
-
-            // Alineación estratégica: OKR del proyecto y su pilar.
-            const okr = settled[5].status === 'fulfilled' ? (settled[5].value?.data as Okr | undefined) : undefined;
-            if (okr) {
-                let pilarNombre = '';
-                try {
-                    const pilarResp = await pilarEstrategicoService.getById(okr.codigo_pilar);
-                    pilarNombre = (pilarResp.data as PilarEstrategico | undefined)?.nombre_pilar || '';
-                } catch { /* sin pilar: se muestra solo el OKR */ }
-                if (!cancelado) setAlineacion({ pilar: pilarNombre, okr: okr.nombre_okr });
-            } else {
-                setAlineacion(null);
-            }
-        })();
-        return () => { cancelado = true; };
-    }, [codigoProyecto, codigoOkr]);
-
-    const totalCosto = useMemo(() => recursos.reduce((s, r) => s + r.subtotal, 0), [recursos]);
+    // Recursos, resultado esperado, objetivos y alineación estratégica (compartido con Aprobaciones).
+    const { recursos, totalCosto, resultadoEsperado, objetivos, alineacion } = useProyectoDetalle(view?.proyecto ?? null);
 
     const filas = useMemo(() => {
         const actividades = view?.actividades || [];

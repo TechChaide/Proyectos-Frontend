@@ -57,6 +57,12 @@ export const recursoProyectoSchema = z.object({
 // Fecha calendario (hora de Ecuador) de "YYYY-MM-DD", "YYYY-MM-DDTHH:mm" o un valor de la API.
 export const parseLocalDate = (value: string): Date | null => aFecha(value);
 
+// Objetivo específico del proyecto (tabla objetivo, varchar(200)). codigo_objetivo 0 = nuevo.
+export const objetivoProyectoSchema = z.object({
+    codigo_objetivo: z.number(),
+    descripcion_objetivo: z.string().trim().min(1, 'Describe el objetivo o quítalo.').max(MAX_LEN_200, `Máximo ${MAX_LEN_200} caracteres.`),
+});
+
 export const proyectoWizardSchema = z.object({
     codigo_proceso: z.number({ required_error: "El proceso es requerido." }).min(1, "El proceso es requerido."),
     codigo_padre: z.number().optional(),
@@ -71,6 +77,7 @@ export const proyectoWizardSchema = z.object({
     // Modelo v6: resultados esperados del proyecto (se guarda como un registro en 'resultado').
     resultados_esperados: z.string().max(MAX_LEN_200, `Máximo ${MAX_LEN_200} caracteres.`).optional(),
     // Recursos asignados al proyecto (opcional).
+    objetivos: z.array(objetivoProyectoSchema),
     recursos: z.array(recursoProyectoSchema),
     fecha_inicio: z.string().min(1, "La fecha de inicio es requerida."),
     fecha_fin: z.string().min(1, "La fecha de fin es requerida."),
@@ -79,15 +86,6 @@ export const proyectoWizardSchema = z.object({
     const proyectoInicio = parseLocalDate(data.fecha_inicio);
     const proyectoFin = parseLocalDate(data.fecha_fin);
     if (!proyectoInicio || !proyectoFin) return;
-
-    // Un proyecto se planifica dentro de un solo año calendario.
-    if (proyectoFin.getFullYear() !== proyectoInicio.getFullYear()) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `El proyecto debe planificarse dentro del año ${proyectoInicio.getFullYear()} (no puede pasar del 31/12/${proyectoInicio.getFullYear()}).`,
-            path: ['fecha_fin'],
-        });
-    }
 
     const fueraDe = (valor: string, min: Date, max: Date) => {
         const d = parseLocalDate(valor);
@@ -181,6 +179,7 @@ export const defaultWizardValues: ProyectoWizardValues = {
     resultados_esperados: '',
     fecha_inicio: '',
     fecha_fin: '',
+    objetivos: [],
     recursos: [],
     actividades: [{ ...defaultActividad, participantes: [{ ...defaultParticipante }] }],
 };
