@@ -31,7 +31,7 @@ import { ahoraSQL } from '@/lib/fechas';
 
 const formSchema = z.object({
     codigo_estado: z.number().optional(),
-    nombre_estado: z.string().min(1, "El nombre es requerido."),
+    nombre_estado: z.string().min(1, "El nombre es requerido.").max(50, "Máximo 50 caracteres."),
     estado: z.string({ required_error: "El estado es requerido." }),
     usuario_modificacion: z.string().optional(),
     fecha_modificacion: z.date().optional(),
@@ -107,7 +107,7 @@ export default function EstadoForm({ record, onSuccess, onCancel }: EstadoFormPr
                                 <FormItem>
                                     <FormLabel>Nombre del Estado</FormLabel>
                                     <FormControl>
-                                        <Input placeholder="Ej: En progreso" {...field} />
+                                        <Input placeholder="Ej: En progreso" maxLength={50} {...field} />
                                     </FormControl>
                                     <FormMessage />
                                 </FormItem>

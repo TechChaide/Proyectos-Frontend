@@ -33,8 +33,8 @@ import { ahoraSQL } from '@/lib/fechas';
 const formSchema = z.object({
     codigo_recurso: z.number().optional(),
     codigo_tipo_recurso: z.number({ required_error: "El tipo de recurso es requerido." }).min(1, "El tipo de recurso es requerido."),
-    nombre_recurso: z.string().min(1, "El nombre es requerido."),
-    costo: z.string().min(1, "El costo es requerido."),
+    nombre_recurso: z.string().min(1, "El nombre es requerido.").max(50, "Máximo 50 caracteres."),
+    costo: z.string().min(1, "El costo es requerido.").max(50, "Máximo 50 caracteres."),
     estado: z.string({ required_error: "El estado es requerido." }),
 });
 
@@ -111,7 +111,7 @@ export default function RecursoForm({ record, tiposRecurso, onSuccess, onCancel 
                                 <FormItem>
                                     <FormLabel>Nombre del Recurso</FormLabel>
                                     <FormControl>
-                                        <Input placeholder="Ej: Diseñador Senior" {...field} onChange={(e) => field.onChange(capitalizar(e.target.value))} />
+                                        <Input placeholder="Ej: Diseñador Senior" maxLength={50} {...field} onChange={(e) => field.onChange(capitalizar(e.target.value))} />
                                     </FormControl>
                                     <FormMessage />
                                 </FormItem>
@@ -151,7 +151,7 @@ export default function RecursoForm({ record, tiposRecurso, onSuccess, onCancel 
                                 <FormItem>
                                     <FormLabel>Costo</FormLabel>
                                     <FormControl>
-                                        <Input placeholder="Ej: 1500" {...field} />
+                                        <Input placeholder="Ej: 1500" maxLength={50} {...field} />
                                     </FormControl>
                                     <FormMessage />
                                 </FormItem>

@@ -32,8 +32,8 @@ import { capitalizar } from '@/lib/texto';
 
 const formSchema = z.object({
     codigo_tipo_recurso: z.number().optional(),
-    nombre_recurso: z.string().min(1, "El nombre es requerido."),
-    proveniencia: z.string().min(1, "La proveniencia es requerida."),
+    nombre_recurso: z.string().min(1, "El nombre es requerido.").max(50, "Máximo 50 caracteres."),
+    proveniencia: z.string().min(1, "La proveniencia es requerida.").max(50, "Máximo 50 caracteres."),
     estado: z.string({ required_error: "El estado es requerido." }),
     usuario_modificacion: z.string().optional(),
     fecha_modificacion: z.date().optional(),
@@ -111,7 +111,7 @@ export default function TipoRecursoForm({ record, onSuccess, onCancel }: TipoRec
                                 <FormItem>
                                     <FormLabel>Nombre del Recurso</FormLabel>
                                     <FormControl>
-                                        <Input placeholder="Ej: Consultor" {...field} onChange={(e) => field.onChange(capitalizar(e.target.value))} />
+                                        <Input placeholder="Ej: Consultor" maxLength={50} {...field} onChange={(e) => field.onChange(capitalizar(e.target.value))} />
                                     </FormControl>
                                     <FormMessage />
                                 </FormItem>
@@ -124,7 +124,7 @@ export default function TipoRecursoForm({ record, onSuccess, onCancel }: TipoRec
                                 <FormItem>
                                     <FormLabel>Proveniencia</FormLabel>
                                     <FormControl>
-                                        <Input placeholder="Ej: Interno" {...field} onChange={(e) => field.onChange(capitalizar(e.target.value))} />
+                                        <Input placeholder="Ej: Interno" maxLength={50} {...field} onChange={(e) => field.onChange(capitalizar(e.target.value))} />
                                     </FormControl>
                                     <FormMessage />
                                 </FormItem>

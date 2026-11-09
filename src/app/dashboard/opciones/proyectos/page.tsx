@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Settings2 } from 'lucide-react';
+import { ArrowLeft, Landmark, Plus, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -13,6 +13,7 @@ import ProcesoSelector from './components/proceso-selector';
 import ProyectoCard from './components/proyecto-card';
 import ProyectoDetailDialog from './components/proyecto-detail-dialog';
 import ProyectoRecursosDialog from './components/proyecto-recursos-dialog';
+import ProyectoObjetivosDialog from './components/proyecto-objetivos-dialog';
 import EstadoProyectoDialog from './components/estado-proyecto-dialog';
 import type { Proyecto } from '@/types/interfaces';
 import { useProyectoViews } from './use-proyecto-views';
@@ -38,6 +39,7 @@ export default function ProyectosPage() {
     const [mostrarRechazados, setMostrarRechazados] = useState(false);
     const [detailView, setDetailView] = useState<ProyectoView | null>(null);
     const [recursosProyecto, setRecursosProyecto] = useState<Proyecto | null>(null);
+    const [objetivosProyecto, setObjetivosProyecto] = useState<Proyecto | null>(null);
     const [estadoView, setEstadoView] = useState<ProyectoView | null>(null);
 
     const proyectoViews = useMemo(
@@ -138,6 +140,12 @@ export default function ProyectosPage() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                         <Button asChild variant="outline">
+                            <Link href="/dashboard/parametros/pilares">
+                                <Landmark className="mr-2 h-4 w-4" />
+                                Pilares y OKR
+                            </Link>
+                        </Button>
+                        <Button asChild variant="outline">
                             <Link href="/dashboard/parametros/pKind">
                                 <Settings2 className="mr-2 h-4 w-4" />
                                 Administrar tipos
@@ -232,6 +240,7 @@ export default function ProyectosPage() {
                                     onViewDetail={() => setDetailView(view)}
                                     onEdit={() => router.push(`/dashboard/opciones/pCreation?codigo_proyecto=${view.proyecto.codigo_proyecto}`)}
                                     onRecursos={() => setRecursosProyecto(view.proyecto)}
+                                    onObjetivos={() => setObjetivosProyecto(view.proyecto)}
                                     onEstado={() => setEstadoView(view)}
                                 />
                             ))}
@@ -257,6 +266,11 @@ export default function ProyectosPage() {
             <ProyectoRecursosDialog
                 proyecto={recursosProyecto}
                 onOpenChange={(open) => !open && setRecursosProyecto(null)}
+            />
+
+            <ProyectoObjetivosDialog
+                proyecto={objetivosProyecto}
+                onOpenChange={(open) => !open && setObjetivosProyecto(null)}
             />
         </div>
     );

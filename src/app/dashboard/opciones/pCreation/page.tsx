@@ -11,7 +11,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form } from '@/components/ui/form';
-import type { Area, TipoProyecto, Responsable, Estado, Solicitud, EstadoSolicitud, AreaSolicitud, Proyecto, Actividad, FichaSocialHistorica, Resultado, TipoRecurso, Recurso, ProyectoRecurso } from '@/types/interfaces';
+import type { Area, TipoProyecto, Responsable, Estado, Solicitud, EstadoSolicitud, AreaSolicitud, Proyecto, Actividad, FichaSocialHistorica, Resultado, TipoRecurso, Recurso, ProyectoRecurso, PilarEstrategico, Okr } from '@/types/interfaces';
 import { procesoService } from '@/services/proyectos/proceso.service';
 import { resultadoService } from '@/services/proyectos/resultado.service';
 import { tipoRecursoService } from '@/services/proyectos/tipoRecurso.service';
@@ -26,6 +26,8 @@ import { estadoSolicitudService } from '@/services/proyectos/estadoSolicitud.ser
 import { areaSolicitudService } from '@/services/proyectos/areaSolicitud.service';
 import { proyectoService } from '@/services/proyectos/proyecto.service';
 import { actividadService } from '@/services/proyectos/actividad.service';
+import { pilarEstrategicoService } from '@/services/proyectos/pilarEstrategico.service';
+import { okrService } from '@/services/proyectos/okr.service';
 import StepperHeader from './components/stepper-header';
 import StepArea from './components/step-area';
 import StepProyecto from './components/step-proyecto';
@@ -34,6 +36,7 @@ import StepRecursos from './components/step-recursos';
 import { proyectoWizardSchema, defaultWizardValues, defaultActividad, defaultParticipante, type ProyectoWizardValues } from './schema';
 import { ahoraSQL, fechaISO, fechaSQL } from '@/lib/fechas';
 import { actividadesPrincipales, hijosPorPadre } from '@/lib/actividades';
+import { procesosVigentes } from '@/lib/procesoNiveles';
 import { resolverAreaPorProyecto } from '../proyectos/area-utils';
 
 const normalize = (value: string): string =>
@@ -90,6 +93,8 @@ export default function ProyectoCreationPage() {
     const [responsables, setResponsables] = useState<Responsable[]>([]);
     const [estados, setEstados] = useState<Estado[]>([]);
     const [personas, setPersonas] = useState<FichaSocialHistorica[]>([]);
+    const [pilares, setPilares] = useState<PilarEstrategico[]>([]);
+    const [okrs, setOkrs] = useState<Okr[]>([]);
     const [isLoadingCatalogs, setIsLoadingCatalogs] = useState(true);
     const [editContext, setEditContext] = useState<EditContext | null>(null);
 
@@ -103,7 +108,7 @@ export default function ProyectoCreationPage() {
             setIsLoadingCatalogs(true);
             try {
                 // Resiliente: si un catálogo falla (p. ej. /api/proyecto da 500), los demás igual cargan.
-                const nombresCatalogo = ['procesos', 'tipos de proyecto', 'responsables', 'estados', 'personas', 'proyectos', 'proceso_solicitud', 'tipos de recurso', 'recursos'];
+                const nombresCatalogo = ['procesos', 'tipos de proyecto', 'responsables', 'estados', 'personas', 'proyectos', 'proceso_solicitud', 'tipos de recurso', 'recursos', 'pilares estratégicos', 'OKR'];
                 const results = await Promise.allSettled([
                     procesoService.getAll(),
                     tipoProyectoService.getAll(),
@@ -114,9 +119,11 @@ export default function ProyectoCreationPage() {
                     areaSolicitudService.getAll(),
                     tipoRecursoService.getAll(),
                     recursoService.getAll(),
+                    pilarEstrategicoService.getAll(),
+                    okrService.getAll(),
                 ]);
                 const asData = (r: PromiseSettledResult<{ data?: any[] }>) => (r.status === 'fulfilled' ? r.value : { data: [] });
-                const [areasResp, tiposResp, responsablesResp, estadosResp, personasResp, proyectosResp, areaSolResp, tiposRecResp, recursosResp] = results.map(asData);
+                const [areasResp, tiposResp, responsablesResp, estadosResp, personasResp, proyectosResp, areaSolResp, tiposRecResp, recursosResp, pilaresResp, okrsResp] = results.map(asData);
 
                 const fallidos = results
                     .map((r, i) => (r.status === 'rejected' ? nombresCatalogo[i] : null))
@@ -129,7 +136,7 @@ export default function ProyectoCreationPage() {
                     });
                 }
 
-                setAreas((areasResp.data || []).filter((a) => a.estado === 'A'));
+                setAreas(procesosVigentes(areasResp.data || []));
                 setTiposProyecto((tiposResp.data || []).filter((t) => t.estado === 'A'));
                 setResponsables(responsablesResp.data || []);
                 setEstados(estadosResp.data || []);
@@ -137,6 +144,9 @@ export default function ProyectoCreationPage() {
                 setRecursos((recursosResp.data || []).filter((r) => r.estado === 'A'));
                 setPersonas(personasResp.data || []);
                 setAreaSolicitudes(areaSolResp.data || []);
+                // Se guardan todos (también inactivos) para poder mostrar el OKR ya asignado al editar.
+                setPilares(pilaresResp.data || []);
+                setOkrs(okrsResp.data || []);
 
                 const todosProyectos = proyectosResp.data || [];
                 const codigoProyectoNum = editCodigoProyecto ? Number(editCodigoProyecto) : null;
@@ -214,6 +224,8 @@ export default function ProyectoCreationPage() {
                         codigo_proceso: areaSolicitudExistente?.codigo_proceso ?? 0,
                         codigo_padre: proyectoExistente.codigo_padre || 0,
                         codigo_tipo_proyecto: proyectoExistente.codigo_tipo_proyecto,
+                        codigo_okr: proyectoExistente.codigo_okr || 0,
+                        codigo_pilar: ((okrsResp.data || []) as Okr[]).find((o) => o.codigo_okr === proyectoExistente.codigo_okr)?.codigo_pilar ?? 0,
                         nombre_proyecto: proyectoExistente.nombre_proyecto,
                         descripcion_proyecto: proyectoExistente.descripcion_proyecto,
                         responsable_proyecto: proyectoExistente.responsable_proyecto,
@@ -472,6 +484,7 @@ export default function ProyectoCreationPage() {
                 stage = 'el proyecto';
                 await proyectoService.save({
                     codigo_proyecto: editContext.codigoProyecto,
+                    codigo_okr: values.codigo_okr || null,
                     codigo_padre: values.codigo_padre || null,
                     codigo_solicitud: editContext.codigoSolicitud,
                     codigo_tipo_proyecto: values.codigo_tipo_proyecto,
@@ -550,6 +563,7 @@ export default function ProyectoCreationPage() {
             stage = 'el proyecto';
             const proyectoResp = await proyectoService.save({
                 codigo_proyecto: 0,
+                codigo_okr: values.codigo_okr || null,
                 codigo_padre: values.codigo_padre || null,
                 codigo_solicitud: codigoSolicitud,
                 codigo_tipo_proyecto: values.codigo_tipo_proyecto,
@@ -623,7 +637,7 @@ export default function ProyectoCreationPage() {
                 <form onSubmit={handleFormSubmit}>
                     <Card>
                         {currentStep === 1 && <StepArea form={form} areas={areas} isLoading={isLoadingCatalogs} />}
-                        {currentStep === 2 && <StepProyecto form={form} tiposProyecto={tiposProyecto} proyectosPadre={proyectosPadre} areaPorProyectoPadre={areaPorProyectoPadre} personas={personas} isLoading={isLoadingCatalogs} isEditMode={isEditMode} />}
+                        {currentStep === 2 && <StepProyecto form={form} tiposProyecto={tiposProyecto} proyectosPadre={proyectosPadre} areaPorProyectoPadre={areaPorProyectoPadre} personas={personas} pilares={pilares} okrs={okrs} isLoading={isLoadingCatalogs} isEditMode={isEditMode} />}
                         {currentStep === 3 && <StepRecursos form={form} tiposRecurso={tiposRecurso} recursos={recursos} isLoading={isLoadingCatalogs} />}
                         {currentStep === 4 && (
                             <StepActividades

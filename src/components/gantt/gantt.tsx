@@ -8,8 +8,10 @@ import {
     eachMonthOfInterval,
     eachWeekOfInterval,
     endOfMonth,
+    endOfWeek,
     format,
-    getWeek,
+    getISOWeek,
+    getISOWeekYear,
     isWeekend,
     max as maxFecha,
     min as minFecha,
@@ -85,6 +87,25 @@ const ICONO_ESTADO: Record<EstadoVisual, React.ComponentType<{ className?: strin
     pendiente: CircleDot,
 };
 
+// Semana ISO que empieza en `lunes`: "Semana 53 de 2026 · 28 dic – 3 ene".
+const ayudaSemana = (lunes: Date) =>
+    `Semana ${getISOWeek(lunes)} de ${getISOWeekYear(lunes)} · ${format(lunes, 'd MMM', { locale: es })} – ${format(endOfWeek(lunes, { weekStartsOn: 1 }), 'd MMM', { locale: es })}`;
+
+// Trazado de un conector fin→inicio. Con separación entre las barras: codo clásico con flecha de entrada por la
+// izquierda. Con actividades consecutivas (casi sin separación) la flecha no cabe por el lado: se sale del final de
+// la predecesora y baja (o sube) hasta apoyarse sobre el comienzo de la barra siguiente.
+const SEPARACION_MINIMA_CODO = 20;
+const trazarConector = (xFin: number, yPred: number, xIni: number, yDep: number): string => {
+    if (xIni - xFin >= SEPARACION_MINIMA_CODO) {
+        const xCodo = xIni - 10;
+        return `M ${xFin} ${yPred} H ${xCodo} V ${yDep} H ${xIni - 1}`;
+    }
+    const xBajada = Math.max(xFin, xIni) + 6;
+    const sentido = yDep >= yPred ? 1 : -1;
+    const yBorde = yDep - sentido * (ALTO_BARRA / 2 + 1);
+    return `M ${xFin} ${yPred} H ${xBajada} V ${yBorde}`;
+};
+
 const elegirEscala = (dias: number): Escala => (dias <= 45 ? 'dia' : dias <= 200 ? 'semana' : 'mes');
 
 interface Tooltip {
@@ -97,7 +118,16 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
     const contenedorRef = useRef<HTMLDivElement>(null);
     const [tooltip, setTooltip] = useState<Tooltip | null>(null);
 
-    const filas = useMemo(() => grupos.flatMap((g) => g.filas), [grupos]);
+    // Una fila con el fin antes del inicio (dato transitorio al editar fechas) se dibuja de un solo día
+    // en vez de producir una barra de ancho negativo o estirar la escala.
+    const gruposSeguros = useMemo(
+        () => grupos.map((g) => ({
+            ...g,
+            filas: g.filas.map((f) => (aFechaSegura(f.fin) < aFechaSegura(f.inicio) ? { ...f, fin: f.inicio } : f)),
+        })),
+        [grupos]
+    );
+    const filas = useMemo(() => gruposSeguros.flatMap((g) => g.filas), [gruposSeguros]);
 
     const escala = useMemo(() => {
         if (filas.length === 0) return null;
@@ -110,7 +140,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
 
         let desde: Date;
         let hasta: Date;
-        let columnas: { key: string; etiqueta: string; inicio: Date; finDeSemana?: boolean }[];
+        let columnas: { key: string; etiqueta: string; inicio: Date; finDeSemana?: boolean; ayuda?: string }[];
         if (tipo === 'dia') {
             desde = addDays(minimo, -1);
             hasta = addDays(maximo, 1);
@@ -120,10 +150,10 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
         } else if (tipo === 'semana') {
             desde = addDays(minimo, -7);
             hasta = addDays(maximo, 7);
-            // Semana del AÑO (1..52/53): la primera semana de enero es la 1. Se muestra el nº de semana
-            // bajo la banda de meses, para que la vista compacta sea legible con rangos largos.
+            // Semana ISO 8601 (lunes a domingo): la semana 1 es la que contiene el primer jueves del año,
+            // por lo que cada año tiene 52 o 53 semanas (2026 tiene 53) y la numeración reinicia sola.
             columnas = eachWeekOfInterval({ start: desde, end: hasta }, { weekStartsOn: 1 }).map((d) => ({
-                key: d.toISOString(), etiqueta: `S${getWeek(d, { weekStartsOn: 1, firstWeekContainsDate: 1 })}`, inicio: d,
+                key: d.toISOString(), etiqueta: `S${getISOWeek(d)}`, inicio: d, ayuda: ayudaSemana(d),
             }));
             desde = columnas[0].inicio;
             hasta = addDays(columnas[columnas.length - 1].inicio, 6);
@@ -152,10 +182,20 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                 return { key: m.toISOString(), etiqueta: format(m, 'MMMM yyyy', { locale: es }), x: xDe(ini), ancho: xDe(addDays(fin, 1)) - xDe(ini) };
             }));
 
+        // Banda de semanas ISO (lunes a domingo) bajo los meses/años en escala diaria y mensual. En la mensual, que se
+        // usa para rangos largos (p. ej. un año), solo se muestra el número para que quepa cada semana.
+        const semanas = tipo !== 'semana'
+            ? eachWeekOfInterval({ start: desde, end: hasta }, { weekStartsOn: 1 }).map((lunes) => {
+                const ini = maxFecha([lunes, desde]);
+                const fin = minFecha([endOfWeek(lunes, { weekStartsOn: 1 }), hasta]);
+                return { key: `s${lunes.toISOString()}`, etiqueta: tipo === 'dia' ? `S${getISOWeek(lunes)}` : String(getISOWeek(lunes)), ayuda: ayudaSemana(lunes), x: xDe(ini), ancho: xDe(addDays(fin, 1)) - xDe(ini) };
+            })
+            : [];
+
         const hoy = hoyEcuador();
         const xHoy = hoy >= desde && hoy <= hasta ? xDe(hoy) + (tipo === 'dia' ? ANCHO_COLUMNA.dia / 2 : 0) : null;
 
-        return { tipo, columnas, anchoLinea, xDe, bandas, xHoy };
+        return { tipo, columnas, anchoLinea, xDe, bandas, semanas, xHoy };
     }, [filas]);
 
     // En la leyenda de estados solo contamos las filas que usan el color del estado (no las categóricas).
@@ -176,7 +216,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
         const mapa = new Map<string, { top: number; x0: number; x1: number; centro: number }>();
         if (!escala) return { mapa, alto: 0 };
         let y = 0;
-        grupos.forEach((g) => {
+        gruposSeguros.forEach((g) => {
             if (g.titulo) y += ALTO_TITULO_GRUPO;
             g.filas.forEach((f) => {
                 const x0 = ANCHO_NOMBRES + escala.xDe(aFechaSegura(f.inicio));
@@ -186,7 +226,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
             });
         });
         return { mapa, alto: y };
-    }, [grupos, escala]);
+    }, [gruposSeguros, escala]);
 
     const conectores = useMemo(() => {
         if (!escala) return [];
@@ -197,7 +237,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                 .filter((predId) => layout.mapa.has(predId))
                 .map((predId) => {
                     const pred = layout.mapa.get(predId)!;
-                    return { id: `${f.id}<-${predId}`, x0: pred.x1, y0: pred.centro, salida: pred.x1 + 11, y1: dep.centro, x1: dep.x0 };
+                    return { id: `${f.id}<-${predId}`, d: trazarConector(pred.x1, pred.centro, dep.x0, dep.centro) };
                 });
         });
     }, [filas, layout, escala]);
@@ -285,10 +325,20 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                                 </div>
                                             ))}
                                         </div>
+                                        {escala.tipo === 'dia' && escala.semanas.length > 0 && (
+                                            <div className="relative h-5 border-b" style={{ borderColor: CUADRICULA }}>
+                                                {escala.semanas.map((s) => (
+                                                    <div key={s.key} title={s.ayuda} className={cn('absolute top-0 flex h-full items-center border-l font-medium tabular-nums text-muted-foreground', escala.tipo === 'dia' ? 'px-1.5 text-[11px]' : 'justify-center px-0 text-[9px]')} style={{ left: s.x, width: s.ancho, borderColor: CUADRICULA }}>
+                                                        <span className="truncate">{s.etiqueta}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                         <div className="flex h-7">
                                             {escala.columnas.map((c) => (
                                                 <div
                                                     key={c.key}
+                                                    title={c.ayuda}
                                                     className={cn('flex shrink-0 items-center justify-center border-l text-[11px] capitalize tabular-nums text-muted-foreground', c.finDeSemana && 'bg-muted/60')}
                                                     style={{ width: ANCHO_COLUMNA[escala.tipo], borderColor: CUADRICULA }}
                                                 >
@@ -296,6 +346,15 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                                 </div>
                                             ))}
                                         </div>
+                                        {escala.tipo === 'mes' && escala.semanas.length > 0 && (
+                                            <div className="relative h-5 border-t" style={{ borderColor: CUADRICULA }}>
+                                                {escala.semanas.map((s) => (
+                                                    <div key={s.key} title={s.ayuda} className={cn('absolute top-0 flex h-full items-center border-l font-medium tabular-nums text-muted-foreground', escala.tipo === 'dia' ? 'px-1.5 text-[11px]' : 'justify-center px-0 text-[9px]')} style={{ left: s.x, width: s.ancho, borderColor: CUADRICULA }}>
+                                                        <span className="truncate">{s.etiqueta}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                         {escala.xHoy !== null && (
                                             <span className="absolute bottom-0.5 z-10 -translate-x-1/2 rounded bg-foreground px-1.5 py-px text-[10px] font-semibold text-background" style={{ left: escala.xHoy }}>
                                                 Hoy
@@ -320,7 +379,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                             {conectores.map((c) => (
                                                 <path
                                                     key={c.id}
-                                                    d={`M ${c.x0} ${c.y0} H ${c.salida} V ${c.y1} H ${Math.max(c.x1 - 2, c.salida)}`}
+                                                    d={c.d}
                                                     fill="none"
                                                     stroke={CONECTOR}
                                                     strokeWidth={1.5}
@@ -330,7 +389,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                         </svg>
                                     )}
 
-                                    {grupos.map((grupo) => (
+                                    {gruposSeguros.map((grupo) => (
                                         <div key={grupo.id}>
                                             {grupo.titulo && (
                                                 <div className="flex border-b bg-muted/20" style={{ borderColor: CUADRICULA, height: ALTO_TITULO_GRUPO }}>

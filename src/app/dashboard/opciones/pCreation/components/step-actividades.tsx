@@ -13,12 +13,15 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { fechaISO } from '@/lib/fechas';
+import { acotarRango, planificarReprogramacion, type CambioReprogramado, type RangoFechas } from '@/lib/dependencias';
 import type { FichaSocialHistorica, Responsable } from '@/types/interfaces';
 import type { ActividadWizardValues, ProyectoWizardValues } from '../schema';
 import { defaultActividad, defaultParticipante, parseLocalDate } from '../schema';
 import { calcularPesosAutomaticos } from '../peso-calculo';
 import ActividadCard from './actividad-card';
 import GanttChart from './gantt-chart';
+import ReprogramacionDialog from './reprogramacion-dialog';
 
 // ¿La actividad tiene todo lo obligatorio? (nombre, descripción, fechas y cada participante con responsable;
 // en las compartidas, además las fechas de cada quien).
@@ -63,6 +66,8 @@ export default function StepActividades({ form, responsables, personas, isLoadin
     const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
     const [bulkShiftDays, setBulkShiftDays] = useState('');
     const [shiftBannerDismissed, setShiftBannerDismissed] = useState(false);
+    // Cambio en espera de confirmación porque movería actividades dependientes.
+    const [pendiente, setPendiente] = useState<{ titulo: string; cambios: CambioReprogramado[]; aplicar: () => void; cancelar?: () => void } | null>(null);
     // Dependencias (solo ayuda visual, no se guardan): id de actividad → ids de sus predecesoras.
     const [dependencias, setDependencias] = useState<Record<string, string[]>>({});
 
@@ -107,21 +112,81 @@ export default function StepActividades({ form, responsables, personas, isLoadin
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [firmaParaPeso]);
 
-    // Desplaza N días una actividad y las fechas de todos sus participantes.
-    const desplazarActividad = (index: number, dias: number) => {
-        const opts = { shouldValidate: true, shouldDirty: true };
+    const opcionesSet = { shouldValidate: true, shouldDirty: true };
+
+    // Escribe el rango de una actividad y deja a sus participantes dentro de él: el único participante de una
+    // actividad individual toma el mismo rango; en las compartidas cada parte se acota a la actividad
+    // (si no queda ningún día, se limpia). `trasladar` mueve además las partes N días antes de acotarlas.
+    const escribirActividad = (index: number, rango: { ini: string; fin: string } | null, trasladar = 0) => {
         const actividad = form.getValues(`actividades.${index}`);
-        if (actividad.fecha_inicio_actividad) form.setValue(`actividades.${index}.fecha_inicio_actividad`, shiftDateString(actividad.fecha_inicio_actividad, dias), opts);
-        if (actividad.fecha_fin_actividad) form.setValue(`actividades.${index}.fecha_fin_actividad`, shiftDateString(actividad.fecha_fin_actividad, dias), opts);
-        (actividad.participantes || []).forEach((p, j) => {
-            if (p.fecha_inicio_actividad) form.setValue(`actividades.${index}.participantes.${j}.fecha_inicio_actividad`, shiftDateString(p.fecha_inicio_actividad, dias), opts);
-            if (p.fecha_fin_actividad) form.setValue(`actividades.${index}.participantes.${j}.fecha_fin_actividad`, shiftDateString(p.fecha_fin_actividad, dias), opts);
+        const participantes = actividad.participantes || [];
+        const vacio = { ini: '', fin: '' };
+        const r = rango ?? vacio;
+        form.setValue(`actividades.${index}.fecha_inicio_actividad`, r.ini, opcionesSet);
+        form.setValue(`actividades.${index}.fecha_fin_actividad`, r.fin, opcionesSet);
+        const actIni = parseLocalDate(r.ini);
+        const actFin = parseLocalDate(r.fin);
+        participantes.forEach((p, j) => {
+            let pr: { ini: string; fin: string } | null;
+            if (!rango) pr = null;
+            else if (participantes.length === 1) pr = r;
+            else {
+                const pi = p.fecha_inicio_actividad ? shiftDateString(p.fecha_inicio_actividad, trasladar) : '';
+                const pf = p.fecha_fin_actividad ? shiftDateString(p.fecha_fin_actividad, trasladar) : '';
+                pr = acotarRango(pi, pf, actIni, actFin);
+            }
+            const v = pr ?? vacio;
+            form.setValue(`actividades.${index}.participantes.${j}.fecha_inicio_actividad`, v.ini, opcionesSet);
+            form.setValue(`actividades.${index}.participantes.${j}.fecha_fin_actividad`, v.fin, opcionesSet);
         });
     };
 
+    // Desplaza N días una actividad y sus participantes SIN salirse de las fechas del proyecto: si el final
+    // se pasa, se recorta al fin del proyecto; si ya no cabe ningún día, se limpian las fechas.
+    const desplazarActividad = (index: number, dias: number) => {
+        const actividad = form.getValues(`actividades.${index}`);
+        const ini = actividad.fecha_inicio_actividad ? shiftDateString(actividad.fecha_inicio_actividad, dias) : '';
+        const fin = actividad.fecha_fin_actividad ? shiftDateString(actividad.fecha_fin_actividad, dias) : '';
+        escribirActividad(index, acotarRango(ini, fin, projectStart, projectEnd), dias);
+    };
+
+    // Actividades con alguna fecha fuera del rango del proyecto (p. ej. tras cambiar las fechas del paso 2).
+    const fueraDeRango = useMemo(() => {
+        if (!projectStart && !projectEnd) return [] as number[];
+        return (actividadesValues || []).flatMap((a, i) => {
+            const ini = parseLocalDate(a?.fecha_inicio_actividad || '');
+            const fin = parseLocalDate(a?.fecha_fin_actividad || '');
+            const fuera = (ini && ((projectStart && ini < projectStart) || (projectEnd && ini > projectEnd)))
+                || (fin && ((projectStart && fin < projectStart) || (projectEnd && fin > projectEnd)));
+            return fuera ? [i] : [];
+        });
+    }, [actividadesValues, projectStart, projectEnd]);
+
+    const ajustarAlProyecto = () => {
+        fueraDeRango.forEach((i) => {
+            const a = form.getValues(`actividades.${i}`);
+            escribirActividad(i, acotarRango(a.fecha_inicio_actividad, a.fecha_fin_actividad, projectStart, projectEnd));
+        });
+    };
+
+    // Rango que quedaría en una actividad al desplazarla N días (acotado al proyecto).
+    const rangoDesplazado = (index: number, dias: number): RangoFechas => {
+        const a = form.getValues(`actividades.${index}`);
+        const ini = a.fecha_inicio_actividad ? shiftDateString(a.fecha_inicio_actividad, dias) : '';
+        const fin = a.fecha_fin_actividad ? shiftDateString(a.fecha_fin_actividad, dias) : '';
+        return acotarRango(ini, fin, projectStart, projectEnd) ?? { ini: '', fin: '' };
+    };
+
     const aplicarDesplazamientoProyecto = () => {
-        fields.forEach((_, index) => desplazarActividad(index, proyectoDeltaDias));
-        setShiftBannerDismissed(true);
+        const hipotesis = new Map<number, RangoFechas>(fields.map((_, i) => [i, rangoDesplazado(i, proyectoDeltaDias)]));
+        confirmarReprogramacion(
+            'Desplazar todas las actividades con el proyecto',
+            hipotesis,
+            () => {
+                fields.forEach((_, index) => desplazarActividad(index, proyectoDeltaDias));
+                setShiftBannerDismissed(true);
+            }
+        );
     };
 
     // ¿fromId depende (directa o transitivamente) de targetId? Evita ciclos al elegir dependencias.
@@ -147,24 +212,67 @@ export default function StepActividades({ form, responsables, personas, isLoadin
             .map(({ f, j }) => ({ id: f.id, nombre: actividadesValues?.[j]?.nombre_actividad?.trim() || `Actividad ${j + 1}` }));
     };
 
+    // Primer día disponible para la actividad `index`: el día siguiente al fin de su(s) predecesora(s), nunca antes
+    // del inicio del proyecto. `sinEspacio` = ya no cabe dentro del proyecto.
+    const limiteActividad = (index: number): { min: Date | null; sinEspacio: boolean; hastaNombre?: string } => {
+        let min: Date | null = projectStart;
+        let hastaNombre: string | undefined;
+        for (const id of dependencias[fields[index]?.id] || []) {
+            const k = fields.findIndex((x) => x.id === id);
+            const fin = k >= 0 ? parseLocalDate(actividadesValues?.[k]?.fecha_fin_actividad || '') : null;
+            if (!fin) continue;
+            const cand = addDays(fin, 1);
+            if (!min || cand > min) {
+                min = cand;
+                hastaNombre = actividadesValues?.[k]?.nombre_actividad?.trim() || `Actividad ${k + 1}`;
+            }
+        }
+        return { min, sinEspacio: !!(min && projectEnd && min > projectEnd), hastaNombre };
+    };
+
+    // Predecesoras como índices (para simular la reprogramación) según un mapa de dependencias.
+    const predecesorasPorIndice = (deps: Record<string, string[]>): number[][] =>
+        fields.map((f) => (deps[f.id] || []).map((id) => fields.findIndex((x) => x.id === id)).filter((k) => k >= 0));
+
+    // Simula el cambio ANTES de aplicarlo: si movería otras actividades por las dependencias, abre el aviso con el
+    // detalle y solo aplica si el usuario confirma. `hipotesis` = rangos que el cambio dejaría en ciertas actividades.
+    const confirmarReprogramacion = (
+        titulo: string,
+        hipotesis: Map<number, RangoFechas>,
+        aplicar: () => void,
+        cancelar?: () => void,
+        deps: Record<string, string[]> = dependencias
+    ) => {
+        const rangos = (form.getValues('actividades') || []).map((a, i) =>
+            hipotesis.get(i) ?? { ini: a.fecha_inicio_actividad || '', fin: a.fecha_fin_actividad || '' }
+        );
+        const cambios = planificarReprogramacion(rangos, predecesorasPorIndice(deps), projectStart, projectEnd);
+        if (cambios.length === 0) {
+            aplicar();
+            return;
+        }
+        setPendiente({ titulo, cambios, aplicar, cancelar });
+    };
+
     // Agrega o quita una predecesora de la actividad `index`.
     const toggleDependeDe = (index: number, predId: string) => {
         const ownId = fields[index]?.id;
         if (!ownId) return;
-        setDependencias((prev) => {
-            const actuales = prev[ownId] || [];
-            let next: string[];
-            if (actuales.includes(predId)) {
-                next = actuales.filter((x) => x !== predId);
-            } else {
-                if (dependeTransitivo(predId, ownId)) return prev; // evita ciclo
-                next = [...actuales, predId];
-            }
-            const copia = { ...prev };
-            if (next.length) copia[ownId] = next;
-            else delete copia[ownId];
-            return copia;
-        });
+        const actuales = dependencias[ownId] || [];
+        let next: string[];
+        if (actuales.includes(predId)) {
+            next = actuales.filter((x) => x !== predId);
+        } else {
+            if (dependeTransitivo(predId, ownId)) return; // evita ciclo
+            next = [...actuales, predId];
+        }
+        const copia = { ...dependencias };
+        if (next.length) copia[ownId] = next;
+        else delete copia[ownId];
+        const aplicar = () => setDependencias(copia);
+        // Quitar una dependencia nunca mueve fechas; agregarla sí puede: se avisa antes.
+        if (next.length < actuales.length) aplicar();
+        else confirmarReprogramacion(`Agregar esta dependencia a la actividad ${index + 1}`, new Map(), aplicar, undefined, copia);
     };
 
     // Índices de predecesoras por actividad (para el Gantt): id → índices actuales.
@@ -266,9 +374,16 @@ export default function StepActividades({ form, responsables, personas, isLoadin
     const aplicarDesplazamientoSeleccion = () => {
         const dias = Number(bulkShiftDays);
         if (!dias || Number.isNaN(dias)) return;
-        selectedIndices.forEach((index) => desplazarActividad(index, dias));
-        setSelectedIndices(new Set());
-        setBulkShiftDays('');
+        const hipotesis = new Map<number, RangoFechas>([...selectedIndices].map((i) => [i, rangoDesplazado(i, dias)]));
+        confirmarReprogramacion(
+            `Mover ${selectedIndices.size} actividad(es) ${dias > 0 ? '+' : ''}${dias} día(s)`,
+            hipotesis,
+            () => {
+                selectedIndices.forEach((index) => desplazarActividad(index, dias));
+                setSelectedIndices(new Set());
+                setBulkShiftDays('');
+            }
+        );
     };
 
     // Datos para la tabla compacta.
@@ -336,6 +451,21 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                                     No, ajustar manualmente
                                 </Button>
                             </div>
+                        </AlertDescription>
+                    </Alert>
+                )}
+
+                {!mostrarBannerDesplazamiento && fueraDeRango.length > 0 && (
+                    <Alert variant="destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertTitle>Hay actividades fuera de las fechas del proyecto</AlertTitle>
+                        <AlertDescription>
+                            <p className="mb-2">
+                                {fueraDeRango.map((i) => `#${i + 1}`).join(', ')} se salen del rango {formatDisplay(projectStart)} – {formatDisplay(projectEnd)}. Ninguna actividad puede quedar fuera del proyecto.
+                            </p>
+                            <Button type="button" size="sm" variant="outline" onClick={ajustarAlProyecto}>
+                                Ajustar al rango del proyecto
+                            </Button>
                         </AlertDescription>
                     </Alert>
                 )}
@@ -488,8 +618,18 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                                 isLoading={isLoading}
                                 onRemove={() => handleRemove(actividadEnEdicion)}
                                 canRemove={fields.length > 1}
-                                minDate={projectStart ?? undefined}
+                                minDate={limiteActividad(actividadEnEdicion).min ?? undefined}
                                 maxDate={projectEnd ?? undefined}
+                                rangoLabel={limiteActividad(actividadEnEdicion).hastaNombre ? `Desde que termina ${limiteActividad(actividadEnEdicion).hastaNombre}` : undefined}
+                                sinEspacio={limiteActividad(actividadEnEdicion).sinEspacio}
+                                confirmarCambioRango={(nuevo, aplicar, cancelar) =>
+                                    confirmarReprogramacion(
+                                        `Cambiar las fechas de la actividad ${actividadEnEdicion + 1}`,
+                                        new Map([[actividadEnEdicion, nuevo]]),
+                                        aplicar,
+                                        cancelar
+                                    )
+                                }
                                 opcionesDependencia={opcionesDependencia(actividadEnEdicion)}
                                 dependeDeIds={dependencias[fields[actividadEnEdicion].id] || []}
                                 onToggleDependeDe={(id) => toggleDependeDe(actividadEnEdicion, id)}
@@ -497,6 +637,27 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                         </CardContent>
                     </Card>
                 )}
+
+                <ReprogramacionDialog
+                    abierto={!!pendiente}
+                    titulo={pendiente?.titulo ?? ''}
+                    elementos="actividades"
+                    items={(pendiente?.cambios ?? []).map((c) => ({
+                        nombre: `${c.index + 1}. ${actividadesValues?.[c.index]?.nombre_actividad?.trim() || `Actividad ${c.index + 1}`}`,
+                        desde: c.desde,
+                        hacia: c.hacia,
+                    }))}
+                    onConfirmar={() => {
+                        const p = pendiente;
+                        setPendiente(null);
+                        p?.aplicar();
+                    }}
+                    onCancelar={() => {
+                        const p = pendiente;
+                        setPendiente(null);
+                        p?.cancelar?.();
+                    }}
+                />
 
                 <GanttChart actividades={actividadesValues} responsables={responsables} personas={personas} dependencias={depIndicesMap} />
             </CardContent>

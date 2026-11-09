@@ -11,7 +11,6 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import type { Area } from '@/types/interfaces';
 import { procesoService } from '@/services/proyectos/proceso.service';
 import { capitalizar } from '@/lib/texto';
-import { CENTROS } from '@/lib/procesoNiveles';
 
 const NUEVO = 'nuevo';
 
@@ -23,31 +22,28 @@ interface ProcesoWizardProps {
     onCancel: () => void;
 }
 
-// Alta guiada de un Proceso: Centro -> Macroproceso -> Proceso.
+// Alta guiada de un Proceso: Macroproceso -> Proceso. Ambos son comunes a todas las regionales
+// (se guardan sin centro); la regional se asigna después, al crear cada Subproceso.
 // El Macroproceso se elige del organigrama existente o se crea en el momento.
 export default function ProcesoWizard({ records, onSuccess, onRefresh, onCancel }: ProcesoWizardProps) {
     const { toast } = useToast();
     const { user } = useAuth();
     const [guardando, setGuardando] = useState(false);
 
-    const [centro, setCentro] = useState('');
     const [macroSel, setMacroSel] = useState('');
     const [macroNombre, setMacroNombre] = useState('');
     const [nombre, setNombre] = useState('');
     const [correos, setCorreos] = useState('');
 
     const macros = useMemo(
-        () => records.filter((r) => r.estado === 'A' && !r.codigo_proceso_padre && r.centro === centro),
-        [records, centro]
+        () => records
+            .filter((r) => r.estado === 'A' && !r.codigo_proceso_padre)
+            .sort((a, b) => a.nombre_proceso.localeCompare(b.nombre_proceso)),
+        [records]
     );
     const macroNuevo = macroSel === NUEVO;
 
-    const cambiarCentro = (v: string) => {
-        setCentro(v);
-        setMacroSel('');
-    };
-
-    const listo = !!centro && !!macroSel && (!macroNuevo || !!macroNombre.trim()) && !!nombre.trim() && !!correos.trim();
+    const listo = !!macroSel && (!macroNuevo || !!macroNombre.trim()) && !!nombre.trim() && !!correos.trim();
 
     const guardar = async () => {
         if (!listo) return;
@@ -56,7 +52,7 @@ export default function ProcesoWizard({ records, onSuccess, onRefresh, onCancel 
             const resp = await procesoService.save({
                 codigo_proceso: 0,
                 codigo_proceso_padre: padre,
-                centro,
+                centro: '', // común a todas las regionales
                 nombre_proceso: nom.trim(),
                 correos_proceso: correos.trim(), // la BD lo exige; el macroproceso no lo pide y toma el del proceso
                 estado: 'A',
@@ -91,24 +87,14 @@ export default function ProcesoWizard({ records, onSuccess, onRefresh, onCancel 
             <CardHeader>
                 <CardTitle>Nuevo Proceso</CardTitle>
                 <CardDescription>
-                    Ubica el proceso en el organigrama: Centro → Macroproceso → Proceso. Si el Macroproceso aún no existe, créalo aquí mismo.
+                    Ubica el proceso en el organigrama: Macroproceso → Proceso, comunes a todas las regionales. Si el Macroproceso aún no existe, créalo aquí mismo.
                 </CardDescription>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-4">
                 <div className="grid gap-1.5">
-                    <Label>1. Centro</Label>
-                    <Select value={centro || undefined} onValueChange={cambiarCentro}>
-                        <SelectTrigger><SelectValue placeholder="Seleccione un centro" /></SelectTrigger>
-                        <SelectContent>
-                            {CENTROS.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                        </SelectContent>
-                    </Select>
-                </div>
-
-                <div className="grid gap-1.5">
-                    <Label>2. Macroproceso</Label>
-                    <Select value={macroSel || undefined} onValueChange={setMacroSel} disabled={!centro}>
-                        <SelectTrigger><SelectValue placeholder={centro ? 'Seleccione o cree un macroproceso' : 'Primero elija el centro'} /></SelectTrigger>
+                    <Label>1. Macroproceso</Label>
+                    <Select value={macroSel || undefined} onValueChange={setMacroSel}>
+                        <SelectTrigger><SelectValue placeholder="Seleccione o cree un macroproceso" /></SelectTrigger>
                         <SelectContent>
                             <SelectItem value={NUEVO}>➕ Nuevo macroproceso…</SelectItem>
                             {macros.map((m) => <SelectItem key={m.codigo_proceso} value={String(m.codigo_proceso)}>{m.nombre_proceso}</SelectItem>)}
@@ -120,10 +106,10 @@ export default function ProcesoWizard({ records, onSuccess, onRefresh, onCancel 
                 </div>
 
                 <div className="grid gap-1.5">
-                    <Label>3. Proceso</Label>
+                    <Label>2. Proceso</Label>
                     <Input placeholder="Nombre del proceso (ej: Colchones)" maxLength={50} value={nombre} disabled={!macroSel} onChange={(e) => setNombre(capitalizar(e.target.value))} />
                     <Input placeholder="Correos del proceso (ej: colchones@chaide.com)" maxLength={50} value={correos} disabled={!macroSel} onChange={(e) => setCorreos(e.target.value)} />
-                    <p className="text-xs text-muted-foreground">{correos.length}/50 caracteres (límite de la base de datos). Subproceso, Línea, Puesto y Tarea se agregan después desde el menú ⋮ del proceso.</p>
+                    <p className="text-xs text-muted-foreground">{correos.length}/50 caracteres (límite de la base de datos). Subproceso (con su regional), Línea, Puesto y Tarea se agregan después desde el menú ⋮ del proceso.</p>
                 </div>
             </CardContent>
             <CardFooter className="flex justify-end gap-2">

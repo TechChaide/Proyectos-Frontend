@@ -44,6 +44,8 @@ export default function DateRangePicker({ startValue, endValue, onChange, disabl
         const from = parseDate(startValue);
         const to = parseDate(endValue);
         if (!from && !to) return undefined;
+        // Un rango invertido (fin antes del inicio) se normaliza para no romper el calendario.
+        if (from && to && to < from) return { from: to, to: from };
         return { from, to };
     }, [startValue, endValue]);
 
@@ -53,6 +55,15 @@ export default function DateRangePicker({ startValue, endValue, onChange, disabl
         if (maxDate) matchers.push({ after: maxDate });
         return matchers.length ? matchers : undefined;
     }, [minDate, maxDate]);
+
+    // Mes que se muestra al abrir: siempre dentro de [minDate, maxDate]; si el valor quedó fuera del rango
+    // permitido, un calendario abierto en un mes bloqueado se vería vacío e inutilizable.
+    const mesInicial = useMemo(() => {
+        let ancla = range?.from ?? minDate ?? hoyEcuador();
+        if (minDate && ancla < minDate) ancla = minDate;
+        if (maxDate && ancla > maxDate) ancla = maxDate;
+        return ancla;
+    }, [range, minDate, maxDate]);
 
     const handleSelect = (selected: DateRange | undefined) => {
         const from = selected?.from ? fechaISO(selected.from) : '';
@@ -97,7 +108,7 @@ export default function DateRangePicker({ startValue, endValue, onChange, disabl
                             numberOfMonths={2}
                             selected={range}
                             onSelect={handleSelect}
-                            defaultMonth={range?.from ?? minDate ?? hoyEcuador()}
+                            defaultMonth={mesInicial}
                             disabled={disabledMatcher}
                             fromDate={minDate}
                             toDate={maxDate}

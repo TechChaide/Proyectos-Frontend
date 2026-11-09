@@ -18,7 +18,7 @@ import {
     TableHead,
     TableCell,
 } from '@/components/ui/table';
-import type { FichaSocialHistorica, Responsable, ProyectoRecurso, Recurso, TipoRecurso, Resultado } from '@/types/interfaces';
+import type { FichaSocialHistorica, Responsable, ProyectoRecurso, Recurso, TipoRecurso, Resultado, Objetivo, Okr, PilarEstrategico } from '@/types/interfaces';
 import type { ProyectoView } from '../types';
 import { formatearFecha } from '@/lib/fechas';
 import { actividadesPrincipales, hijosPorPadre, participacionEnteraPorActividad } from '@/lib/actividades';
@@ -26,6 +26,9 @@ import { proyectoRecursoService } from '@/services/proyectos/proyectoRecurso.ser
 import { recursoService } from '@/services/proyectos/recurso.service';
 import { tipoRecursoService } from '@/services/proyectos/tipoRecurso.service';
 import { resultadoService } from '@/services/proyectos/resultado.service';
+import { objetivoService } from '@/services/proyectos/objetivo.service';
+import { okrService } from '@/services/proyectos/okr.service';
+import { pilarEstrategicoService } from '@/services/proyectos/pilarEstrategico.service';
 
 const num = (s?: string) => { const n = parseFloat((s || '').replace(',', '.')); return Number.isNaN(n) ? 0 : n; };
 const money = (n: number) => `$${n.toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -54,10 +57,13 @@ export default function ProyectoDetailDialog({ view, onOpenChange, responsables,
     // Datos extra (recursos y resultado esperado) que se cargan al abrir el detalle de un proyecto.
     const [recursos, setRecursos] = useState<RecursoFila[]>([]);
     const [resultadoEsperado, setResultadoEsperado] = useState('');
+    const [objetivos, setObjetivos] = useState<Objetivo[]>([]);
+    const [alineacion, setAlineacion] = useState<{ pilar: string; okr: string } | null>(null);
     const codigoProyecto = view?.proyecto.codigo_proyecto ?? null;
+    const codigoOkr = view?.proyecto.codigo_okr ?? null;
 
     useEffect(() => {
-        if (!codigoProyecto) { setRecursos([]); setResultadoEsperado(''); return; }
+        if (!codigoProyecto) { setRecursos([]); setResultadoEsperado(''); setObjetivos([]); setAlineacion(null); return; }
         let cancelado = false;
         (async () => {
             const settled = await Promise.allSettled([
@@ -65,6 +71,8 @@ export default function ProyectoDetailDialog({ view, onOpenChange, responsables,
                 recursoService.getAll(),
                 tipoRecursoService.getAll(),
                 resultadoService.getAll(),
+                objetivoService.getByProyecto(codigoProyecto),
+                codigoOkr ? okrService.getById(codigoOkr) : Promise.resolve(null),
             ]);
             if (cancelado) return;
             const datos = <T,>(r: PromiseSettledResult<{ data?: T[] }>): T[] => (r.status === 'fulfilled' ? (r.value.data || []) : []);
@@ -85,9 +93,23 @@ export default function ProyectoDetailDialog({ view, onOpenChange, responsables,
             setRecursos(filasRec);
             const esperado = resultList.find((r) => r.codigo_proyecto === codigoProyecto && norm(r.categoria_resultado).includes('esper'));
             setResultadoEsperado(esperado?.descripcion_resultado || '');
+            setObjetivos(datos<Objetivo>(settled[4]).filter((o) => o.estado === 'A'));
+
+            // Alineación estratégica: OKR del proyecto y su pilar.
+            const okr = settled[5].status === 'fulfilled' ? (settled[5].value?.data as Okr | undefined) : undefined;
+            if (okr) {
+                let pilarNombre = '';
+                try {
+                    const pilarResp = await pilarEstrategicoService.getById(okr.codigo_pilar);
+                    pilarNombre = (pilarResp.data as PilarEstrategico | undefined)?.nombre_pilar || '';
+                } catch { /* sin pilar: se muestra solo el OKR */ }
+                if (!cancelado) setAlineacion({ pilar: pilarNombre, okr: okr.nombre_okr });
+            } else {
+                setAlineacion(null);
+            }
         })();
         return () => { cancelado = true; };
-    }, [codigoProyecto]);
+    }, [codigoProyecto, codigoOkr]);
 
     const totalCosto = useMemo(() => recursos.reduce((s, r) => s + r.subtotal, 0), [recursos]);
 
@@ -156,9 +178,21 @@ export default function ProyectoDetailDialog({ view, onOpenChange, responsables,
                                 </div>
                             )}
                             <div className="col-span-2">
+                                <p className="text-xs font-medium text-muted-foreground">Alineación estratégica</p>
+                                <p>{alineacion ? `${alineacion.pilar ? `${alineacion.pilar} → ` : ''}${alineacion.okr}` : 'Sin OKR asignado'}</p>
+                            </div>
+                            <div className="col-span-2">
                                 <p className="text-xs font-medium text-muted-foreground">Objetivo Principal</p>
                                 <p>{view.proyecto.objetivo_principal || '-'}</p>
                             </div>
+                            {objetivos.length > 0 && (
+                                <div className="col-span-2">
+                                    <p className="text-xs font-medium text-muted-foreground">Objetivos ({objetivos.length})</p>
+                                    <ul className="list-disc pl-5">
+                                        {objetivos.map((o) => <li key={o.codigo_objetivo}>{o.descripcion_objetivo}</li>)}
+                                    </ul>
+                                </div>
+                            )}
                             {resultadoEsperado && (
                                 <div className="col-span-2">
                                     <p className="text-xs font-medium text-muted-foreground">Resultados Esperados</p>

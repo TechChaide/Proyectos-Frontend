@@ -211,8 +211,39 @@ export interface AreaSolicitud {
   usuario_modificacion: string;
 }
 
+// Modelo v7: pilar_estrategico → okr → proyecto (proyecto.codigo_okr). Un proyecto tiene N objetivos.
+export interface PilarEstrategico {
+  codigo_pilar: number;
+  nombre_pilar: string;
+  descripcion_pilar: string;
+  estado: string;
+  fecha_modificacion: string | Date;
+  usuario_modificacion: string;
+}
+
+export interface Okr {
+  codigo_okr: number;
+  codigo_pilar: number;
+  nombre_okr: string;
+  descripcion_okr: string;
+  estado: string;
+  fecha_modificacion: string | Date;
+  usuario_modificacion: string;
+}
+
+export interface Objetivo {
+  codigo_objetivo: number;
+  codigo_proyecto: number;
+  descripcion_objetivo: string;
+  estado: string;
+  fecha_modificacion: string | Date;
+  usuario_modificacion: string;
+}
+
 export interface Proyecto {
   codigo_proyecto: number;
+  /** Modelo v7: OKR al que se alinea el proyecto (null si aún no se asigna). */
+  codigo_okr: number | null;
   codigo_padre: number | null;
   codigo_solicitud: number;
   codigo_tipo_proyecto: number;

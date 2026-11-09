@@ -7,12 +7,32 @@ import { fetchWithAuth } from "@/lib/http-client";
 
 const API_URL = `${environment.apiAPP}/api/estado_solicitud`;
 
+// Filtros de POST /api/estado_solicitud/vigente.
+export interface EstadoSolicitudVigenteFiltros {
+  codigo_solicitud: number;
+  [key: string]: unknown;
+}
+
 export const estadoSolicitudService = {
   async getAll(): Promise<BodyListResponse<EstadoSolicitud>> {
     const response = await fetchWithAuth(API_URL);
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({ message: 'Error desconocido' }));
       throw new Error(errorBody.message || 'Failed to fetch estado-solicitud');
+    }
+    return response.json();
+  },
+
+  // Estado vigente (último registrado) de una solicitud (POST /api/estado_solicitud/vigente).
+  async vigente(filtros: EstadoSolicitudVigenteFiltros): Promise<BodyResponse<EstadoSolicitud>> {
+    const response = await fetchWithAuth(`${API_URL}/vigente`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(filtros),
+    });
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({ message: 'Error desconocido' }));
+      throw new Error(errorBody.message || 'Failed to fetch estado-solicitud vigente');
     }
     return response.json();
   },

@@ -1,20 +1,13 @@
 
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFieldArray, useWatch, type UseFormReturn } from 'react-hook-form';
 import { addDays, differenceInCalendarDays } from 'date-fns';
 import { Check, Info, Link2, Plus, Trash2, UserMinus, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from '@/components/ui/select';
 import {
     FormControl,
     FormField,
@@ -24,9 +17,13 @@ import {
 } from '@/components/ui/form';
 import type { FichaSocialHistorica, Responsable } from '@/types/interfaces';
 import { cn } from '@/lib/utils';
+import { fechaISO } from '@/lib/fechas';
+import { planificarReprogramacion, type CambioReprogramado, type RangoFechas } from '@/lib/dependencias';
 import { MAX_PARTICIPANTES, participacionPorDuracion, porcentajesEnteros } from '@/lib/actividades';
 import { MAX_LEN_200, parseLocalDate, type ProyectoWizardValues } from '../schema';
 import DateRangePicker from './date-range-picker';
+import ResponsableCombobox from './responsable-combobox';
+import ReprogramacionDialog from './reprogramacion-dialog';
 
 // Desplaza una fecha "YYYY-MM-DD" N días conservando el formato.
 const shiftDateString = (dateStr: string, days: number): string => {
@@ -46,6 +43,12 @@ interface ActividadCardProps {
     onRemove: () => void;
     canRemove: boolean;
     minDate?: Date;
+    /** Texto del aviso de rango bajo el selector de la actividad. */
+    rangoLabel?: string;
+    /** La predecesora termina al final del proyecto: no queda lugar para esta actividad. */
+    sinEspacio?: boolean;
+    /** Avisa al padre antes de cambiar el rango de la actividad (puede mover actividades dependientes). */
+    confirmarCambioRango?: (nuevo: RangoFechas, aplicar: () => void, cancelar: () => void) => void;
     maxDate?: Date;
     /** Otras actividades que pueden ser predecesoras (dependencia), con su nombre visible. */
     opcionesDependencia: { id: string; nombre: string }[];
@@ -54,7 +57,7 @@ interface ActividadCardProps {
     onToggleDependeDe: (id: string) => void;
 }
 
-export default function ActividadCard({ form, index, responsables, personas, isLoading, onRemove, canRemove, minDate, maxDate, opcionesDependencia, dependeDeIds, onToggleDependeDe }: ActividadCardProps) {
+export default function ActividadCard({ form, index, responsables, personas, isLoading, onRemove, canRemove, minDate, rangoLabel, sinEspacio, confirmarCambioRango, maxDate, opcionesDependencia, dependeDeIds, onToggleDependeDe }: ActividadCardProps) {
     const base = `actividades.${index}` as const;
     const { fields, append, remove } = useFieldArray({ control: form.control, name: `${base}.participantes` });
 
@@ -63,10 +66,6 @@ export default function ActividadCard({ form, index, responsables, personas, isL
     const participantes = useWatch({ control: form.control, name: `${base}.participantes` }) || [];
 
     const personaMap = useMemo(() => new Map(personas.map((p) => [p.CODIGO, p])), [personas]);
-    const etiquetaResponsable = (r: Responsable) => {
-        const persona = personaMap.get(r.codigo_empleado);
-        return persona ? `${r.codigo_empleado} - ${persona.NOMBRE} - ${persona.DEPARTAMENTO}` : r.codigo_empleado;
-    };
 
     const esCompartida = fields.length > 1;
     const participacion = useMemo(
@@ -90,7 +89,7 @@ export default function ActividadCard({ form, index, responsables, personas, isL
     //  - Individual: el único participante hace toda la actividad, así que toma ese mismo rango.
     //  - Compartida: NO se tocan las fechas de los participantes (cada quien ingresa su estimado dentro
     //    de la actividad). El rango de la actividad solo acota el máximo permitido por participante.
-    const handleRangoActividad = (start: string, end: string) => {
+    const aplicarRangoActividad = (start: string, end: string) => {
         form.setValue(`${base}.fecha_inicio_actividad`, start, { shouldValidate: true, shouldDirty: true });
         form.setValue(`${base}.fecha_fin_actividad`, end, { shouldValidate: true, shouldDirty: true });
         if (fields.length === 1) {
@@ -99,9 +98,72 @@ export default function ActividadCard({ form, index, responsables, personas, isL
         }
     };
 
-    const handleRangoParticipante = (j: number, start: string, end: string) => {
+    // Último rango COMPLETO de la actividad: si el usuario cancela el aviso de reprogramación se restaura.
+    const ultimoRangoActividad = useRef<RangoFechas>({ ini: '', fin: '' });
+    useEffect(() => {
+        if (fechaInicio && fechaFin) ultimoRangoActividad.current = { ini: fechaInicio, fin: fechaFin };
+    }, [fechaInicio, fechaFin]);
+
+    const handleRangoActividad = (start: string, end: string) => {
+        // Una selección a medias (solo el inicio) se aplica tal cual; el aviso se hace al completar el rango.
+        if (!confirmarCambioRango || !start || !end) {
+            aplicarRangoActividad(start, end);
+            return;
+        }
+        const previo = ultimoRangoActividad.current;
+        confirmarCambioRango(
+            { ini: start, fin: end },
+            () => aplicarRangoActividad(start, end),
+            () => aplicarRangoActividad(previo.ini, previo.fin)
+        );
+    };
+
+    const aplicarRangoParticipante = (j: number, start: string, end: string) => {
         form.setValue(`${base}.participantes.${j}.fecha_inicio_actividad`, start, { shouldValidate: true, shouldDirty: true });
         form.setValue(`${base}.participantes.${j}.fecha_fin_actividad`, end, { shouldValidate: true, shouldDirty: true });
+    };
+
+    // Cambio de una parte de participante en espera de confirmación (movería otras partes dependientes).
+    const [pendientePart, setPendientePart] = useState<{ titulo: string; cambios: CambioReprogramado[]; aplicar: () => void; cancelar?: () => void } | null>(null);
+    // Último rango completo de cada parte (por id de campo) para restaurarlo si se cancela el aviso.
+    const ultimoRangoPart = useRef<Record<string, RangoFechas>>({});
+    useEffect(() => {
+        (participantes || []).forEach((p, j) => {
+            const id = fields[j]?.id;
+            if (id && p?.fecha_inicio_actividad && p?.fecha_fin_actividad) ultimoRangoPart.current[id] = { ini: p.fecha_inicio_actividad, fin: p.fecha_fin_actividad };
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [participantes]);
+
+    const confirmarReprogramacionPart = (
+        titulo: string,
+        hipotesis: Map<number, RangoFechas>,
+        aplicar: () => void,
+        cancelar?: () => void,
+        deps: Record<string, string[]> = depPart
+    ) => {
+        const rangos = (participantes || []).map((p, k) => hipotesis.get(k) ?? { ini: p?.fecha_inicio_actividad || '', fin: p?.fecha_fin_actividad || '' });
+        const preds = fields.map((f) => (deps[f.id] || []).map((id) => fields.findIndex((x) => x.id === id)).filter((k) => k >= 0));
+        const cambios = planificarReprogramacion(rangos, preds, actividadInicio ?? null, actividadFin ?? null);
+        if (cambios.length === 0) {
+            aplicar();
+            return;
+        }
+        setPendientePart({ titulo, cambios, aplicar, cancelar });
+    };
+
+    const handleRangoParticipante = (j: number, start: string, end: string) => {
+        if (!start || !end) {
+            aplicarRangoParticipante(j, start, end);
+            return;
+        }
+        const previo = ultimoRangoPart.current[fields[j]?.id] ?? { ini: '', fin: '' };
+        confirmarReprogramacionPart(
+            `Cambiar las fechas de la parte de ${nombreParticipante(j)}`,
+            new Map([[j, { ini: start, fin: end }]]),
+            () => aplicarRangoParticipante(j, start, end),
+            () => aplicarRangoParticipante(j, previo.ini, previo.fin)
+        );
     };
 
     const agregarParticipante = () => {
@@ -154,19 +216,35 @@ export default function ActividadCard({ form, index, responsables, personas, isL
     const toggleDepPart = (j: number, predId: string) => {
         const ownId = fields[j]?.id;
         if (!ownId) return;
-        setDepPart((prev) => {
-            const actuales = prev[ownId] || [];
-            let next: string[];
-            if (actuales.includes(predId)) next = actuales.filter((x) => x !== predId);
-            else {
-                if (dependeTransitivoPart(predId, ownId)) return prev;
-                next = [...actuales, predId];
-            }
-            const copia = { ...prev };
-            if (next.length) copia[ownId] = next;
-            else delete copia[ownId];
-            return copia;
+        const actuales = depPart[ownId] || [];
+        let next: string[];
+        if (actuales.includes(predId)) next = actuales.filter((x) => x !== predId);
+        else {
+            if (dependeTransitivoPart(predId, ownId)) return;
+            next = [...actuales, predId];
+        }
+        const copia = { ...depPart };
+        if (next.length) copia[ownId] = next;
+        else delete copia[ownId];
+        const aplicar = () => setDepPart(copia);
+        // Quitar una dependencia no mueve fechas; agregarla sí puede: se avisa antes.
+        if (next.length < actuales.length) aplicar();
+        else confirmarReprogramacionPart(`Hacer que la parte de ${nombreParticipante(j)} dependa de otra`, new Map(), aplicar, undefined, copia);
+    };
+
+    // Primer día disponible para la parte de un participante: el siguiente al fin de su(s) predecesora(s),
+    // nunca antes del inicio de la actividad. `sinEspacio` = ya no queda lugar dentro de la actividad.
+    const limiteDependencia = (j: number): { min: Date | undefined; sinEspacio: boolean; hastaNombre?: string } => {
+        let min = actividadInicio;
+        let hastaNombre: string | undefined;
+        (depPart[fields[j]?.id] || []).forEach((id) => {
+            const k = fields.findIndex((x) => x.id === id);
+            const fin = k >= 0 ? parseLocalDate(participantes[k]?.fecha_fin_actividad || '') : null;
+            if (!fin) return;
+            const cand = addDays(fin, 1);
+            if (!min || cand > min) { min = cand; hastaNombre = nombreParticipante(k); }
         });
+        return { min, sinEspacio: !!(min && actividadFin && min > actividadFin), hastaNombre };
     };
 
     const handleRemoveParticipante = (j: number) => {
@@ -217,8 +295,20 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                 if (delta > 0) {
                     const ini = parts[j].fecha_inicio_actividad;
                     const fin = parts[j].fecha_fin_actividad;
-                    if (ini) form.setValue(`${base}.participantes.${j}.fecha_inicio_actividad`, shiftDateString(ini, delta), { shouldValidate: true, shouldDirty: true });
-                    if (fin) form.setValue(`${base}.participantes.${j}.fecha_fin_actividad`, shiftDateString(fin, delta), { shouldValidate: true, shouldDirty: true });
+                    const limiteFin = parseLocalDate(form.getValues(`${base}.fecha_fin_actividad`) || '');
+                    // Si la predecesora termina el último día de la actividad no queda lugar: se limpian las
+                    // fechas de esta parte (en vez de dejarlas fuera del rango de la actividad).
+                    if (limiteFin && (minIni as Date) > limiteFin) {
+                        form.setValue(`${base}.participantes.${j}.fecha_inicio_actividad`, '', { shouldValidate: true, shouldDirty: true });
+                        form.setValue(`${base}.participantes.${j}.fecha_fin_actividad`, '', { shouldValidate: true, shouldDirty: true });
+                    } else {
+                        // Se desplaza conservando la duración, pero sin pasar del fin de la actividad.
+                        let nuevoFin = fin ? shiftDateString(fin, delta) : '';
+                        const finDesplazado = parseLocalDate(nuevoFin);
+                        if (limiteFin && finDesplazado && finDesplazado > limiteFin) nuevoFin = fechaISO(limiteFin);
+                        form.setValue(`${base}.participantes.${j}.fecha_inicio_actividad`, shiftDateString(ini, delta), { shouldValidate: true, shouldDirty: true });
+                        if (fin) form.setValue(`${base}.participantes.${j}.fecha_fin_actividad`, nuevoFin, { shouldValidate: true, shouldDirty: true });
+                    }
                     parts[j] = form.getValues(`${base}.participantes.${j}`);
                     algo = true;
                 }
@@ -251,11 +341,17 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                             startValue={fechaInicio}
                             endValue={fechaFin}
                             onChange={handleRangoActividad}
-                            disabled={isLoading}
+                            disabled={isLoading || sinEspacio}
                             minDate={minDate}
                             maxDate={maxDate}
+                            rangoLabel={rangoLabel}
                         />
                     </FormControl>
+                    {sinEspacio && (
+                        <p className="text-xs font-medium text-destructive">
+                            No queda lugar en el proyecto: su predecesora termina el último día. Quita la dependencia o amplía las fechas del proyecto.
+                        </p>
+                    )}
                     {fechaError && <p className="text-sm font-medium text-destructive">{fechaError.message}</p>}
                 </FormItem>
                 <Button
@@ -352,6 +448,7 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                         const elegidos = new Set(participantes.filter((_, k) => k !== j).map((x) => x?.codigo_responsable));
                         const errP = errores?.participantes?.[j];
                         const opcDep = esCompartida ? opcionesPart(j) : [];
+                        const limite = limiteDependencia(j);
                         const depsDeEste = depPart[item.id] || [];
                         return (
                             <div key={item.id} className="flex flex-col gap-2 rounded-md border bg-card p-3">
@@ -362,26 +459,16 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                                     render={({ field }) => (
                                         <FormItem className="min-w-[200px] lg:flex-[2]">
                                             <FormLabel className="text-xs">Responsable</FormLabel>
-                                            <Select
-                                                onValueChange={(value) => field.onChange(Number(value))}
-                                                value={field.value ? String(field.value) : undefined}
-                                                disabled={isLoading}
-                                            >
-                                                <FormControl>
-                                                    <SelectTrigger>
-                                                        <SelectValue placeholder={isLoading ? 'Cargando...' : 'Seleccione'} />
-                                                    </SelectTrigger>
-                                                </FormControl>
-                                                <SelectContent>
-                                                    {responsables
-                                                        .filter((r) => !elegidos.has(r.codigo_responsable))
-                                                        .map((r) => (
-                                                            <SelectItem key={r.codigo_responsable} value={String(r.codigo_responsable)}>
-                                                                {etiquetaResponsable(r)}
-                                                            </SelectItem>
-                                                        ))}
-                                                </SelectContent>
-                                            </Select>
+                                            <FormControl>
+                                                <ResponsableCombobox
+                                                    value={Number(field.value) || 0}
+                                                    responsables={responsables}
+                                                    personaMap={personaMap}
+                                                    excluidos={elegidos}
+                                                    onChange={(codigo) => field.onChange(codigo)}
+                                                    isLoading={isLoading}
+                                                />
+                                            </FormControl>
                                             <FormMessage />
                                         </FormItem>
                                     )}
@@ -397,12 +484,17 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                                             startValue={p?.fecha_inicio_actividad || ''}
                                             endValue={p?.fecha_fin_actividad || ''}
                                             onChange={(s, e) => handleRangoParticipante(j, s, e)}
-                                            disabled={isLoading || !actividadInicio}
-                                            minDate={actividadInicio}
+                                            disabled={isLoading || !actividadInicio || limite.sinEspacio}
+                                            minDate={limite.min}
                                             maxDate={actividadFin}
-                                            rangoLabel="Dentro de la actividad"
+                                            rangoLabel={limite.hastaNombre ? `Desde que termina ${limite.hastaNombre}` : 'Dentro de la actividad'}
                                             color={colorParticipante(j)}
                                         />
+                                        {limite.sinEspacio && (
+                                            <p className="text-xs font-medium text-destructive">
+                                                No queda lugar: {limite.hastaNombre} termina el último día de la actividad. Quita la dependencia o amplía la actividad.
+                                            </p>
+                                        )}
                                         {errP?.fecha_fin_actividad && (
                                             <p className="text-sm font-medium text-destructive">{errP.fecha_fin_actividad.message}</p>
                                         )}
@@ -469,6 +561,23 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                         );
                     })}
                 </div>
+
+                <ReprogramacionDialog
+                    abierto={!!pendientePart}
+                    titulo={pendientePart?.titulo ?? ''}
+                    elementos="partes"
+                    items={(pendientePart?.cambios ?? []).map((c) => ({ nombre: nombreParticipante(c.index), desde: c.desde, hacia: c.hacia }))}
+                    onConfirmar={() => {
+                        const p = pendientePart;
+                        setPendientePart(null);
+                        p?.aplicar();
+                    }}
+                    onCancelar={() => {
+                        const p = pendientePart;
+                        setPendientePart(null);
+                        p?.cancelar?.();
+                    }}
+                />
 
                 {esCompartida && (
                     <p className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground">

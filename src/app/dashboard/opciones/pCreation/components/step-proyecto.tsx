@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { useWatch, type UseFormReturn } from 'react-hook-form';
-import type { FichaSocialHistorica, Proyecto, TipoProyecto } from '@/types/interfaces';
+import type { FichaSocialHistorica, Okr, PilarEstrategico, Proyecto, TipoProyecto } from '@/types/interfaces';
 import { Input } from '@/components/ui/input';
 import EmployeeMultiCombobox from './employee-multi-combobox';
 import DateRangePicker from './date-range-picker';
@@ -24,7 +24,7 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { MAX_LEN_50, MAX_LEN_200, type ProyectoWizardValues } from '../schema';
+import { MAX_LEN_50, MAX_LEN_100, MAX_LEN_200, type ProyectoWizardValues } from '../schema';
 
 interface StepProyectoProps {
     form: UseFormReturn<ProyectoWizardValues>;
@@ -33,16 +33,46 @@ interface StepProyectoProps {
     /** Proceso (codigo_proceso) de cada posible proyecto padre, para exigir que hijo y padre sean de la misma proceso. */
     areaPorProyectoPadre: Map<number, number | null>;
     personas: FichaSocialHistorica[];
+    /** Catálogos de la vista "Pilares Estratégicos y OKR" (incluye inactivos para respetar lo ya asignado). */
+    pilares: PilarEstrategico[];
+    okrs: Okr[];
     isLoading: boolean;
     /** En edición no se limita el inicio a hoy, para respetar proyectos que ya empezaron. */
     isEditMode?: boolean;
 }
 
-export default function StepProyecto({ form, tiposProyecto, proyectosPadre, areaPorProyectoPadre, personas, isLoading, isEditMode = false }: StepProyectoProps) {
+export default function StepProyecto({ form, tiposProyecto, proyectosPadre, areaPorProyectoPadre, personas, pilares, okrs, isLoading, isEditMode = false }: StepProyectoProps) {
     const fechaInicio = useWatch({ control: form.control, name: 'fecha_inicio' });
     const fechaFin = useWatch({ control: form.control, name: 'fecha_fin' });
     const codigoArea = useWatch({ control: form.control, name: 'codigo_proceso' });
     const codigoPadre = useWatch({ control: form.control, name: 'codigo_padre' });
+    const codigoPilar = useWatch({ control: form.control, name: 'codigo_pilar' });
+    const codigoOkr = useWatch({ control: form.control, name: 'codigo_okr' });
+
+    // Alineación estratégica: se ofrecen pilares y OKR activos; si el proyecto ya tiene uno inactivo
+    // asignado, se mantiene visible para no perderlo al editar.
+    const pilaresOpciones = useMemo(() => {
+        const okrActual = okrs.find((o) => o.codigo_okr === codigoOkr);
+        return pilares
+            .filter((p) => p.estado === 'A' || p.codigo_pilar === okrActual?.codigo_pilar)
+            .sort((a, b) => a.nombre_pilar.localeCompare(b.nombre_pilar));
+    }, [pilares, okrs, codigoOkr]);
+    const okrsOpciones = useMemo(
+        () => okrs
+            .filter((o) => o.codigo_pilar === codigoPilar && (o.estado === 'A' || o.codigo_okr === codigoOkr))
+            .sort((a, b) => a.nombre_okr.localeCompare(b.nombre_okr)),
+        [okrs, codigoPilar, codigoOkr]
+    );
+    const okrSel = okrs.find((o) => o.codigo_okr === codigoOkr);
+
+    const handlePilarChange = (value: string) => {
+        const nuevo = Number(value);
+        form.setValue('codigo_pilar', nuevo, { shouldDirty: true });
+        // El OKR elegido debe pertenecer al pilar; si cambia el pilar se limpia.
+        if (okrSel && okrSel.codigo_pilar !== nuevo) {
+            form.setValue('codigo_okr', 0, { shouldValidate: true, shouldDirty: true });
+        }
+    };
 
     // Regla 1: solo pueden ser PADRE los proyectos de la MISMA proceso seleccionada en el paso 1.
     const padresFiltrados = useMemo(
@@ -114,8 +144,9 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                         <FormItem>
                             <FormLabel>Nombre del Proyecto</FormLabel>
                             <FormControl>
-                                <Input placeholder="Ej: Implementación Módulo Base" maxLength={MAX_LEN_50} {...field} />
+                                <Input placeholder="Ej: Implementación Módulo Base" maxLength={MAX_LEN_100} {...field} />
                             </FormControl>
+                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_100} caracteres</p>
                             <FormMessage />
                         </FormItem>
                     )}
@@ -187,6 +218,63 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                     )}
                 />
 
+                <FormItem>
+                    <FormLabel>Pilar Estratégico</FormLabel>
+                    <Select
+                        onValueChange={handlePilarChange}
+                        value={codigoPilar ? String(codigoPilar) : undefined}
+                        disabled={isLoading}
+                    >
+                        <FormControl>
+                            <SelectTrigger>
+                                <SelectValue placeholder={isLoading ? 'Cargando pilares...' : pilaresOpciones.length ? 'Seleccione un pilar' : 'No hay pilares registrados'} />
+                            </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                            {pilaresOpciones.map((p) => (
+                                <SelectItem key={p.codigo_pilar} value={String(p.codigo_pilar)}>
+                                    {p.nombre_pilar}{p.estado !== 'A' ? ' (inactivo)' : ''}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                        {!isLoading && pilaresOpciones.length === 0
+                            ? 'Registra los pilares y sus OKR en Parámetros → Pilares Estratégicos.'
+                            : 'Primero elige el pilar; luego el OKR al que se alinea el proyecto.'}
+                    </p>
+                </FormItem>
+
+                <FormField
+                    control={form.control}
+                    name="codigo_okr"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>OKR</FormLabel>
+                            <Select
+                                onValueChange={(value) => field.onChange(Number(value))}
+                                value={field.value ? String(field.value) : undefined}
+                                disabled={isLoading || !codigoPilar}
+                            >
+                                <FormControl>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder={!codigoPilar ? 'Elige primero un pilar' : okrsOpciones.length ? 'Seleccione un OKR' : 'Este pilar no tiene OKR activos'} />
+                                    </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                    {okrsOpciones.map((o) => (
+                                        <SelectItem key={o.codigo_okr} value={String(o.codigo_okr)}>
+                                            {o.nombre_okr}{o.estado !== 'A' ? ' (inactivo)' : ''}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            {okrSel?.descripcion_okr && <p className="text-xs text-muted-foreground">{okrSel.descripcion_okr}</p>}
+                            <FormMessage />
+                        </FormItem>
+                    )}
+                />
+
                 <FormField
                     control={form.control}
                     name="responsable_proyecto"
@@ -237,9 +325,9 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                         <FormItem className="md:col-span-2">
                             <FormLabel>Descripción del Proyecto</FormLabel>
                             <FormControl>
-                                <Textarea placeholder="Describe el alcance del proyecto" maxLength={MAX_LEN_50} {...field} />
+                                <Textarea placeholder="Describe el alcance del proyecto" maxLength={MAX_LEN_200} {...field} />
                             </FormControl>
-                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_50} caracteres</p>
+                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_200} caracteres</p>
                             <FormMessage />
                         </FormItem>
                     )}
@@ -252,9 +340,9 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                         <FormItem className="md:col-span-2">
                             <FormLabel>Objetivo Principal</FormLabel>
                             <FormControl>
-                                <Textarea placeholder="Describe el objetivo principal del proyecto" maxLength={MAX_LEN_50} {...field} />
+                                <Textarea placeholder="Describe el objetivo principal del proyecto" maxLength={MAX_LEN_200} {...field} />
                             </FormControl>
-                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_50} caracteres</p>
+                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_200} caracteres</p>
                             <FormMessage />
                         </FormItem>
                     )}

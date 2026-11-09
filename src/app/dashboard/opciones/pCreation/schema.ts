@@ -5,6 +5,7 @@ import { MAX_PARTICIPANTES } from '@/lib/actividades';
 
 // Límites de la base (modelo v5). Proyecto sigue en varchar(50); actividad subió a varchar(200).
 export const MAX_LEN_50 = 50;
+export const MAX_LEN_100 = 100;
 export const MAX_LEN_200 = 200;
 
 // Un participante de la actividad. Si la actividad tiene un solo participante se guarda como una
@@ -60,10 +61,13 @@ export const proyectoWizardSchema = z.object({
     codigo_proceso: z.number({ required_error: "El proceso es requerido." }).min(1, "El proceso es requerido."),
     codigo_padre: z.number().optional(),
     codigo_tipo_proyecto: z.number({ required_error: "El tipo de proyecto es requerido." }).min(1, "El tipo de proyecto es requerido."),
-    nombre_proyecto: z.string().min(1, "El nombre del proyecto es requerido.").max(MAX_LEN_50, `Máximo ${MAX_LEN_50} caracteres.`),
-    descripcion_proyecto: z.string().min(1, "La descripción es requerida.").max(MAX_LEN_50, `Máximo ${MAX_LEN_50} caracteres.`),
+    // Modelo v7: alineación estratégica. El pilar solo filtra los OKR; en la tabla proyecto se guarda codigo_okr.
+    codigo_pilar: z.number().optional(),
+    codigo_okr: z.number().optional(),
+    nombre_proyecto: z.string().min(1, "El nombre del proyecto es requerido.").max(MAX_LEN_100, `Máximo ${MAX_LEN_100} caracteres.`),
+    descripcion_proyecto: z.string().min(1, "La descripción es requerida.").max(MAX_LEN_200, `Máximo ${MAX_LEN_200} caracteres.`),
     responsable_proyecto: z.string().min(1, "El responsable del proyecto es requerido.").max(MAX_LEN_50, `Máximo ${MAX_LEN_50} caracteres (selecciona menos personas o usa nombres más cortos).`),
-    objetivo_principal: z.string().min(1, "El objetivo principal es requerido.").max(MAX_LEN_50, `Máximo ${MAX_LEN_50} caracteres.`),
+    objetivo_principal: z.string().min(1, "El objetivo principal es requerido.").max(MAX_LEN_200, `Máximo ${MAX_LEN_200} caracteres.`),
     // Modelo v6: resultados esperados del proyecto (se guarda como un registro en 'resultado').
     resultados_esperados: z.string().max(MAX_LEN_200, `Máximo ${MAX_LEN_200} caracteres.`).optional(),
     // Recursos asignados al proyecto (opcional).
@@ -168,6 +172,8 @@ export const defaultWizardValues: ProyectoWizardValues = {
     codigo_proceso: 0,
     codigo_padre: 0,
     codigo_tipo_proyecto: 0,
+    codigo_pilar: 0,
+    codigo_okr: 0,
     nombre_proyecto: '',
     descripcion_proyecto: '',
     responsable_proyecto: '',

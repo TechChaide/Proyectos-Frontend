@@ -13,11 +13,15 @@ function Calendar({
   className,
   classNames,
   showOutsideDays = true,
+  // Siempre 6 filas de semanas: así el alto no cambia entre meses de 5 y 6 semanas y las flechas de navegación
+  // quedan fijas, permitiendo avanzar o retroceder varios meses con clics consecutivos.
+  fixedWeeks = true,
   ...props
 }: CalendarProps) {
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
+      fixedWeeks={fixedWeeks}
       className={cn("p-3", className)}
       classNames={{
         months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",

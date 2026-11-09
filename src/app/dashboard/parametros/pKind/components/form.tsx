@@ -31,7 +31,7 @@ import { ahoraSQL } from '@/lib/fechas';
 
 const formSchema = z.object({
     codigo_tipo_proyecto: z.number().optional(),
-    nombre_tipo_proyecto: z.string().min(1, "El nombre es requerido."),
+    nombre_tipo_proyecto: z.string().min(1, "El nombre es requerido.").max(50, "Máximo 50 caracteres."),
     estado: z.string({ required_error: "El estado es requerido." }),
     usuario_modificacion: z.string().optional(),
     fecha_modificacion: z.date().optional(),
@@ -107,7 +107,7 @@ export default function TipoProyectoForm({ record, onSuccess, onCancel }: TipoPr
                                 <FormItem>
                                     <FormLabel>Nombre del Tipo de Proyecto</FormLabel>
                                     <FormControl>
-                                        <Input placeholder="Ej: Interno" {...field} />
+                                        <Input placeholder="Ej: Interno" maxLength={50} {...field} />
                                     </FormControl>
                                     <FormMessage />
                                 </FormItem>

@@ -7,12 +7,34 @@ import { fetchWithAuth } from "@/lib/http-client";
 
 const API_URL = `${environment.apiAPP}/api/proyecto_recurso`;
 
+// Filtros de POST /api/proyecto_recurso/buscar.
+export interface ProyectoRecursoBuscarFiltros {
+  codigo_proyecto?: number;
+  codigo_recurso?: number;
+  estado?: string;
+  [key: string]: unknown;
+}
+
 export const proyectoRecursoService = {
   async getAll(): Promise<BodyListResponse<ProyectoRecurso>> {
     const response = await fetchWithAuth(API_URL);
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({ message: 'Error desconocido' }));
       throw new Error(errorBody.message || 'Failed to fetch proyecto-recurso');
+    }
+    return response.json();
+  },
+
+  // Búsqueda filtrada en el servidor (POST /api/proyecto_recurso/buscar).
+  async buscar(filtros: ProyectoRecursoBuscarFiltros): Promise<BodyListResponse<ProyectoRecurso>> {
+    const response = await fetchWithAuth(`${API_URL}/buscar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(filtros),
+    });
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({ message: 'Error desconocido' }));
+      throw new Error(errorBody.message || 'Failed to search proyecto-recurso');
     }
     return response.json();
   },

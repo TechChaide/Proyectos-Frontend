@@ -7,12 +7,32 @@ import { fetchWithAuth } from "@/lib/http-client";
 
 const API_URL = `${environment.apiAPP}/api/estado_actividad`;
 
+// Filtros de POST /api/estado_actividad/vigente.
+export interface EstadoActividadVigenteFiltros {
+  codigo_actividad: number;
+  [key: string]: unknown;
+}
+
 export const estadoActividadService = {
   async getAll(): Promise<BodyListResponse<EstadoActividad>> {
     const response = await fetchWithAuth(API_URL);
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({ message: 'Error desconocido' }));
       throw new Error(errorBody.message || 'Failed to fetch estado-actividad');
+    }
+    return response.json();
+  },
+
+  // Estado vigente (último registrado) de una actividad (POST /api/estado_actividad/vigente).
+  async vigente(filtros: EstadoActividadVigenteFiltros): Promise<BodyResponse<EstadoActividad>> {
+    const response = await fetchWithAuth(`${API_URL}/vigente`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(filtros),
+    });
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({ message: 'Error desconocido' }));
+      throw new Error(errorBody.message || 'Failed to fetch estado-actividad vigente');
     }
     return response.json();
   },

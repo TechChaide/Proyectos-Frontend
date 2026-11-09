@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import ProcesoTree from './components/proceso-tree';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { regionalesDisponibles } from '@/lib/procesoNiveles';
 
 export default function AreaPage() {
     const [records, setRecords] = useState<Area[]>([]);
@@ -84,10 +85,18 @@ export default function AreaPage() {
         return d;
     };
 
-    const parent = parentId ? records.find((r) => r.codigo_proceso === parentId) ?? null : null;
+    // Padre del nodo: al crear, el elegido; al editar, el del propio registro (para heredar su regional).
+    const codigoPadre = selectedRecord ? selectedRecord.codigo_proceso_padre : parentId;
+    const parent = codigoPadre ? records.find((r) => r.codigo_proceso === codigoPadre) ?? null : null;
     const parentNombre = parent?.nombre_proceso ?? null;
     const parentCentro = parent?.centro ?? '';
     const parentCorreos = parent?.correos_proceso ?? '';
+
+    // Descendientes del registro editado (heredan la regional del Subproceso).
+    const descendientesDe = (codigo: number): Area[] => {
+        const hijos = records.filter((r) => r.codigo_proceso_padre === codigo);
+        return hijos.flatMap((h) => [h, ...descendientesDe(h.codigo_proceso)]);
+    };
 
     return (
         <div className="flex flex-col gap-4">
@@ -96,7 +105,7 @@ export default function AreaPage() {
                     <CardTitle>Gestión de Procesos (Organigrama)</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <p className="text-sm text-muted-foreground">Estructura jerárquica: Macroproceso → Proceso (obligatorio) y, opcionalmente, Subproceso → Línea → Puesto de Trabajo → Tarea.</p>
+                    <p className="text-sm text-muted-foreground">Estructura jerárquica: Macroproceso → Proceso (obligatorio, comunes a todas las regionales) y, opcionalmente, Subproceso (por regional) → Línea → Puesto de Trabajo → Tarea.</p>
                 </CardContent>
             </Card>
 
@@ -143,6 +152,9 @@ export default function AreaPage() {
                             parentNombre={parentNombre}
                             parentCentro={parentCentro}
                             parentCorreos={parentCorreos}
+                            parentActivo={parent ? parent.estado === 'A' : true}
+                            regionales={regionalesDisponibles(records)}
+                            descendientes={selectedRecord ? descendientesDe(selectedRecord.codigo_proceso) : []}
                             nivel={selectedRecord ? profundidad(selectedRecord.codigo_proceso) : parentId ? profundidad(parentId) + 1 : 0}
                             onSuccess={handleSuccess}
                             onCancel={handleCancel}

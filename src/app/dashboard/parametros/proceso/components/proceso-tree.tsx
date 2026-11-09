@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import type { Area } from '@/types/interfaces';
-import { CENTROS, nombreNivel } from '@/lib/procesoNiveles';
+import { PROFUNDIDAD_SUBPROCESO, centrosDeProcesos, nombreNivel } from '@/lib/procesoNiveles';
 
 interface NodoProceso extends Area {
     children: NodoProceso[];
@@ -65,10 +65,21 @@ interface ProcesoTreeProps {
 
 export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: ProcesoTreeProps) {
     const arbol = useMemo(() => construirArbol(records), [records]);
+    // Regionales presentes en los subprocesos (Macroproceso/Proceso son comunes y no cuentan).
+    const regionales = useMemo(() => {
+        const porId = new Map(records.map((r) => [r.codigo_proceso, r]));
+        const prof = (r: Area) => {
+            let d = 0;
+            let p = r.codigo_proceso_padre ? porId.get(r.codigo_proceso_padre) : undefined;
+            while (p && d < 20) { d++; p = p.codigo_proceso_padre ? porId.get(p.codigo_proceso_padre) : undefined; }
+            return d;
+        };
+        return centrosDeProcesos(records.filter((r) => prof(r) >= PROFUNDIDAD_SUBPROCESO));
+    }, [records]);
 
     const [busqueda, setBusqueda] = useState('');
     const [centro, setCentro] = useState('todos');
-    const [verInactivos, setVerInactivos] = useState(true);
+    const [verInactivos, setVerInactivos] = useState(false);
     const [abiertos, setAbiertos] = useState<Set<number>>(new Set());
     const inicializado = useRef(false);
 
@@ -82,20 +93,19 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
     const q = norm(busqueda.trim());
     const buscando = q.length > 0;
 
-    // Filtra por centro, estado y texto. Si un nodo coincide con la búsqueda, se muestra con todo lo que cuelga de él.
+    // Filtra por regional, estado y texto. Si un nodo coincide con la búsqueda, se muestra con todo lo que cuelga de él.
+    // La regional solo filtra desde el Subproceso: Macroprocesos y Procesos son comunes y siempre se muestran.
     const visible = useMemo(() => {
         const coincide = (n: NodoProceso) => !q || norm(`${n.nombre_proceso} ${n.correos_proceso}`).includes(q);
-        const filtrar = (n: NodoProceso, forzado: boolean): NodoProceso | null => {
+        const filtrar = (n: NodoProceso, forzado: boolean, nivel: number): NodoProceso | null => {
             if (!verInactivos && n.estado !== 'A') return null;
+            if (nivel === PROFUNDIDAD_SUBPROCESO && centro !== 'todos' && (n.centro || '').trim() !== centro) return null;
             const propio = coincide(n);
-            const hijos = n.children.map((h) => filtrar(h, forzado || propio)).filter(Boolean) as NodoProceso[];
-            if (!forzado && !propio && hijos.length === 0) return null;
+            const hijos = n.children.map((h) => filtrar(h, forzado || propio, nivel + 1)).filter(Boolean) as NodoProceso[];
+            if (!forzado && !propio && hijos.length === 0 && (q || nivel >= PROFUNDIDAD_SUBPROCESO)) return null;
             return { ...n, children: hijos };
         };
-        return arbol
-            .filter((r) => centro === 'todos' || r.centro === centro)
-            .map((r) => filtrar(r, false))
-            .filter(Boolean) as NodoProceso[];
+        return arbol.map((r) => filtrar(r, false, 0)).filter(Boolean) as NodoProceso[];
     }, [arbol, q, centro, verInactivos]);
 
     const idsConHijos = useMemo(() => records.filter((r) => records.some((x) => x.codigo_proceso_padre === r.codigo_proceso)).map((r) => r.codigo_proceso), [records]);
@@ -108,10 +118,12 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
             return next;
         });
 
-    const renderNodo = (nodo: NodoProceso, nivel: number, padre: NodoProceso | null) => {
+    const renderNodo = (nodo: NodoProceso, nivel: number, padre: NodoProceso | null, ancestroInactivo = false) => {
         const tieneHijos = nodo.children.length > 0;
         const abierto = buscando || abiertos.has(nodo.codigo_proceso);
-        const inactivo = nodo.estado !== 'A';
+        const inactivoPropio = nodo.estado !== 'A';
+        // Aunque un dato antiguo siga activo, bajo un nivel inactivo se muestra como inactivo.
+        const inactivo = inactivoPropio || ancestroInactivo;
         const { icono: Icono, clase } = estiloNivel(nivel);
         const total = tieneHijos ? contarDescendientes(nodo) : 0;
         // El correo solo aporta si es propio de este nodo: el del macroproceso no se pide y el heredado se repite.
@@ -148,7 +160,7 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
                         <span className={cn('truncate text-sm', nivel === 0 ? 'font-semibold' : 'font-medium', inactivo && 'line-through')}>{nodo.nombre_proceso}</span>
                         <span className="text-[11px] text-muted-foreground">{nombreNivel(nivel)}</span>
                         {total > 0 && <span className="text-[11px] text-muted-foreground">· {total} {total === 1 ? 'nivel inferior' : 'niveles inferiores'}</span>}
-                        {inactivo && <span className="rounded bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive">Inactivo</span>}
+                        {inactivo && <span className="rounded bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive">{inactivoPropio ? 'Inactivo' : 'Inactivo (nivel superior)'}</span>}
                     </div>
 
                     {mostrarCorreo && (
@@ -157,8 +169,8 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
                             <span className="truncate">{nodo.correos_proceso}</span>
                         </span>
                     )}
-                    {nivel === 0 && nodo.centro ? (
-                        <span className="shrink-0 rounded bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border">Centro {nodo.centro}</span>
+                    {nivel === PROFUNDIDAD_SUBPROCESO && nodo.centro ? (
+                        <span className="shrink-0 rounded bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border">Regional {nodo.centro}</span>
                     ) : null}
 
                     <DropdownMenu>
@@ -173,8 +185,8 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
                             </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => onAddChild(nodo.codigo_proceso)}>
-                                <Plus className="mr-2 h-4 w-4" /> Agregar {nombreNivel(nivel + 1)}
+                            <DropdownMenuItem onClick={() => onAddChild(nodo.codigo_proceso)} disabled={inactivo}>
+                                <Plus className="mr-2 h-4 w-4" /> Agregar nivel
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => onEdit(nodo)}>
                                 <Pencil className="mr-2 h-4 w-4" /> Editar
@@ -185,7 +197,7 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
 
                 {tieneHijos && abierto && (
                     <div className="ml-[18px] border-l border-border/70 pl-2">
-                        {nodo.children.map((h) => renderNodo(h, nivel + 1, nodo))}
+                        {nodo.children.map((h) => renderNodo(h, nivel + 1, nodo, inactivo))}
                     </div>
                 )}
             </div>
@@ -201,10 +213,10 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
                     <Input className="pl-8" placeholder="Buscar proceso o correo…" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
                 </div>
                 <Select value={centro} onValueChange={setCentro}>
-                    <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-[180px]" aria-label="Filtrar subprocesos por regional"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                        <SelectItem value="todos">Todos los centros</SelectItem>
-                        {CENTROS.map((c) => <SelectItem key={c} value={c}>Centro {c}</SelectItem>)}
+                        <SelectItem value="todos">Todas las regionales</SelectItem>
+                        {regionales.map((c) => <SelectItem key={c} value={c}>Regional {c}</SelectItem>)}
                     </SelectContent>
                 </Select>
                 <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
@@ -215,7 +227,7 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
                     <Button type="button" variant="ghost" size="sm" onClick={() => setAbiertos(new Set(idsConHijos))} disabled={buscando}>Expandir todo</Button>
                     <Button type="button" variant="ghost" size="sm" onClick={() => setAbiertos(new Set())} disabled={buscando}>Colapsar todo</Button>
                     <Button type="button" size="sm" onClick={onAddRoot}>
-                        <Plus className="mr-2 h-4 w-4" /> Nuevo proceso
+                        <Plus className="mr-2 h-4 w-4" /> Nuevo nivel
                     </Button>
                 </div>
             </div>
@@ -235,7 +247,7 @@ export default function ProcesoTree({ records, onAddRoot, onAddChild, onEdit }: 
 
             {arbol.length === 0 ? (
                 <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-                    No hay procesos. Crea el primero con “Nuevo proceso”.
+                    No hay procesos. Crea el primero con “Nuevo nivel”.
                 </div>
             ) : visible.length === 0 ? (
                 <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">

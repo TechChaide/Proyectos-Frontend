@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Building, CalendarRange, CheckCircle2, Clock, CornerDownRight, Edit, Flag, HelpCircle, ListChecks, Package, User, XCircle } from 'lucide-react';
+import { Building, CalendarRange, CheckCircle2, Clock, CornerDownRight, Edit, Flag, HelpCircle, ListChecks, Package, Target, User, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -24,11 +24,12 @@ interface ProyectoCardProps {
     onViewDetail: () => void;
     onEdit?: () => void;
     onRecursos?: () => void;
+    onObjetivos?: () => void;
     onEstado?: () => void;
     mostrarArea?: boolean;
 }
 
-export default function ProyectoCard({ view, onViewDetail, onEdit, onRecursos, onEstado, mostrarArea = false }: ProyectoCardProps) {
+export default function ProyectoCard({ view, onViewDetail, onEdit, onRecursos, onObjetivos, onEstado, mostrarArea = false }: ProyectoCardProps) {
     const { proyecto, estadoSolicitudNombre, tipoProyectoNombre, actividades, padreNombre, subProyectosCount } = view;
     const estadoEstilo = estiloEstadoSolicitud(estadoSolicitudNombre);
 
@@ -89,6 +90,11 @@ export default function ProyectoCard({ view, onViewDetail, onEdit, onRecursos, o
                 {onEstado && (
                     <Button variant="outline" size="icon" onClick={onEstado} aria-label="Actualizar estado del proyecto" title="Actualizar estado del proyecto">
                         <Flag className="h-4 w-4" />
+                    </Button>
+                )}
+                {onObjetivos && (
+                    <Button variant="outline" size="icon" onClick={onObjetivos} aria-label="Objetivos del proyecto" title="Objetivos del proyecto">
+                        <Target className="h-4 w-4" />
                     </Button>
                 )}
                 {onRecursos && (
