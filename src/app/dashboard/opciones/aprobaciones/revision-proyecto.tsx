@@ -19,12 +19,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { FichaSocialHistorica, Responsable } from '@/types/interfaces';
-import { actividadesEvaluables, actividadesPrincipales, duracionDias, hijosPorPadre } from '@/lib/actividades';
+import { actividadesEvaluables, actividadesPrincipales, duracionDias, esParticipacion, hijosPorPadre, rutaActividad, subactividadesPorPadre } from '@/lib/actividades';
 import { aFechaSegura, formatearFecha } from '@/lib/fechas';
 import { cn } from '@/lib/utils';
 import type { ProyectoView } from '../proyectos/types';
 import { useProyectoDetalle } from '../proyectos/use-proyecto-detalle';
 import ProyectoGantt from '../proyectos/components/proyecto-gantt';
+import ActividadesCards from './actividades-cards';
+import ObjetivosNiveles from '../proyectos/components/objetivos-niveles';
 
 const money = (n: number) => `$${n.toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -37,6 +39,10 @@ interface RevisionProyectoProps {
     /** Faltan los estados "Aprobado"/"Rechazado" en el catálogo. */
     sinEstados: boolean;
     onResolver: (aprobar: boolean) => void;
+    /** La fila que lo contiene ya muestra nombre, estado, responsable, etc.: se omite la tarjeta de cabecera. */
+    sinCabecera?: boolean;
+    /** Aprobar pide primero la evaluación (evaluador y fechas): ese diálogo reemplaza a la confirmación simple. */
+    pedirEvaluacion?: boolean;
 }
 
 interface Senal {
@@ -46,9 +52,9 @@ interface Senal {
 
 // Panel de revisión de un proyecto pendiente: todo lo necesario para decidir con criterio (qué busca, cómo se
 // alinea a la estrategia, cuándo y quién lo hace, y cuánto cuesta) y la decisión con confirmación.
-export default function RevisionProyecto({ view, responsables, personas, procesando, sinEstados, onResolver }: RevisionProyectoProps) {
+export default function RevisionProyecto({ view, responsables, personas, procesando, sinEstados, onResolver, sinCabecera = false, pedirEvaluacion = false }: RevisionProyectoProps) {
     const p = view.proyecto;
-    const { recursos, totalCosto, resultadoEsperado, objetivos, alineacion, cargando } = useProyectoDetalle(p);
+    const { recursos, totalCosto, resultadosEsperados, resultadosHijos, objetivos, alineacion, cargando } = useProyectoDetalle(p);
     const [confirmar, setConfirmar] = useState<null | 'aprobar' | 'rechazar'>(null);
     const [verCorrectos, setVerCorrectos] = useState(false);
 
@@ -61,7 +67,17 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
     };
 
     const principales = useMemo(() => actividadesPrincipales(view.actividades), [view.actividades]);
-    const compartidas = useMemo(() => hijosPorPadre(view.actividades).size, [view.actividades]);
+    // Actividades o subactividades compartidas (las que tienen participaciones de varias personas).
+    const compartidas = useMemo(() => {
+        const porCodigo = new Map(view.actividades.map((a) => [a.codigo_actividad, a]));
+        let n = 0;
+        hijosPorPadre(view.actividades).forEach((hs, padre) => {
+            const fila = porCodigo.get(padre);
+            if (fila && hs.some((h) => esParticipacion(h, fila))) n++;
+        });
+        return n;
+    }, [view.actividades]);
+    const totalSubactividades = useMemo(() => [...subactividadesPorPadre(view.actividades).values()].reduce((s, l) => s + l.length, 0), [view.actividades]);
     const duracionProyecto = duracionDias(p.fecha_inicio, p.fecha_fin);
 
     // Carga por persona: actividades y días asignados (solo lo que se ejecuta: las partes de cada participante).
@@ -72,7 +88,7 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
             const ini = aFechaSegura(a.fecha_inicio_actividad).getTime();
             const fin = aFechaSegura(a.fecha_fin_actividad).getTime();
             const prev = mapa.get(a.codigo_responsable) ?? { nombre: nombreDe(a.codigo_responsable), actividades: [], dias: 0, inicio: Infinity, fin: -Infinity };
-            prev.actividades.push(a.nombre_actividad);
+            prev.actividades.push(rutaActividad(a, view.actividades));
             prev.dias += duracionDias(a.fecha_inicio_actividad, a.fecha_fin_actividad);
             prev.inicio = Math.min(prev.inicio, ini);
             prev.fin = Math.max(prev.fin, fin);
@@ -96,7 +112,7 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
             ? { ok: true, texto: `Tiene ${objetivos.length} ${objetivos.length === 1 ? 'objetivo específico' : 'objetivos específicos'}.` }
             : { ok: false, texto: 'No define objetivos específicos (solo el objetivo principal).' });
         lista.push(principales.length > 0
-            ? { ok: true, texto: `${principales.length} ${principales.length === 1 ? 'actividad' : 'actividades'} planificadas${compartidas ? `, ${compartidas} compartida(s)` : ''}.` }
+            ? { ok: true, texto: `${principales.length} ${principales.length === 1 ? 'actividad' : 'actividades'} planificadas${totalSubactividades ? `, ${totalSubactividades} subactividad(es)` : ''}${compartidas ? `, ${compartidas} compartida(s)` : ''}.` }
             : { ok: false, texto: 'No tiene actividades registradas.' });
         const sinResponsable = actividadesEvaluables(view.actividades).filter((a) => !responsableMap.has(a.codigo_responsable)).length;
         if (sinResponsable > 0) lista.push({ ok: false, texto: `${sinResponsable} actividad(es) sin responsable asignado.` });
@@ -110,13 +126,13 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
                 : { ok: false, texto: 'No tiene recursos asignados.' });
         }
         return lista;
-    }, [alineacion, objetivos, principales.length, compartidas, view.actividades, responsableMap, p.fecha_inicio, p.fecha_fin, cargando, recursos.length, totalCosto]);
+    }, [alineacion, objetivos, principales.length, compartidas, totalSubactividades, view.actividades, responsableMap, p.fecha_inicio, p.fecha_fin, cargando, recursos.length, totalCosto]);
 
     const pendientesRevisar = senales.filter((s) => !s.ok).length;
 
     return (
         <div className="flex flex-col gap-4">
-            {/* Cabecera + decisión */}
+            {!sinCabecera && (
             <Card>
                 <CardHeader className="gap-3">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -138,11 +154,13 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
                 </CardHeader>
             </Card>
 
+            )}
+
             {/* Cifras clave: lo que un aprobador mira primero */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {[
                     { etiqueta: 'Duración', valor: `${duracionProyecto} días`, detalle: `${formatearFecha(p.fecha_inicio)} – ${formatearFecha(p.fecha_fin)}` },
-                    { etiqueta: 'Actividades', valor: String(principales.length), detalle: compartidas ? `${compartidas} compartida(s)` : 'todas individuales' },
+                    { etiqueta: 'Actividades', valor: String(principales.length), detalle: [totalSubactividades ? `${totalSubactividades} subactividad(es)` : '', compartidas ? `${compartidas} compartida(s)` : ''].filter(Boolean).join(' · ') || 'todas individuales' },
                     { etiqueta: 'Equipo', valor: String(equipo.length), detalle: equipo.length === 1 ? 'persona' : 'personas' },
                     { etiqueta: 'Costo estimado', valor: cargando ? '…' : recursos.length ? money(totalCosto) : '—', detalle: cargando ? 'cargando' : `${recursos.length} recurso(s)` },
                 ].map((k) => (
@@ -199,10 +217,10 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
                 </CardContent>
             </Card>
 
-            <Tabs defaultValue="resumen">
+            <Tabs defaultValue="actividades">
                 <TabsList aria-label="Secciones de la revisión del proyecto">
+                    <TabsTrigger value="actividades">Actividades ({principales.length})</TabsTrigger>
                     <TabsTrigger value="resumen">Resumen</TabsTrigger>
-                    <TabsTrigger value="cronograma">Cronograma ({principales.length})</TabsTrigger>
                     <TabsTrigger value="equipo">Equipo ({equipo.length})</TabsTrigger>
                     <TabsTrigger value="recursos">Recursos ({recursos.length})</TabsTrigger>
                 </TabsList>
@@ -221,26 +239,30 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
                                 ) : <p className="text-muted-foreground">Sin OKR asignado.</p>}
                             </div>
                             <div className="md:col-span-2">
-                                <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground"><Target className="h-3.5 w-3.5" /> Objetivo principal</p>
-                                <p>{p.objetivo_principal || '—'}</p>
+                                <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground"><Target className="h-3.5 w-3.5" /> Objetivos</p>
+                                <ObjetivosNiveles principal={p.objetivo_principal} secundarios={objetivos.map((o) => o.descripcion_objetivo)} />
                             </div>
-                            <div className="md:col-span-2">
-                                <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Objetivos específicos ({objetivos.length})</p>
-                                {objetivos.length > 0 ? (
-                                    <ol className="flex flex-col gap-1.5">
-                                        {objetivos.map((o, i) => (
-                                            <li key={o.codigo_objetivo} className="flex gap-2">
-                                                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold tabular-nums text-primary">{i + 1}</span>
-                                                <span>{o.descripcion_objetivo}</span>
-                                            </li>
-                                        ))}
-                                    </ol>
-                                ) : <p className="text-muted-foreground">No se definieron objetivos específicos.</p>}
-                            </div>
-                            {resultadoEsperado && (
+                            {resultadosEsperados.length > 0 && (
                                 <div className="md:col-span-2">
-                                    <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Resultados esperados</p>
-                                    <p>{resultadoEsperado}</p>
+                                    <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Resultados esperados ({resultadosEsperados.length})</p>
+                                    <ol className="list-decimal space-y-0.5 pl-5">
+                                        {resultadosEsperados.map((r, i) => <li key={i}>{r}</li>)}
+                                    </ol>
+                                </div>
+                            )}
+                            {resultadosHijos.length > 0 && (
+                                <div className="md:col-span-2">
+                                    <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Alineación y resultados esperados de sus proyectos hijos ({resultadosHijos.reduce((n, h) => n + h.resultados.length, 0)})</p>
+                                    <div className="flex flex-col gap-2">
+                                        {resultadosHijos.map((h) => (
+                                            <div key={h.proyecto}>
+                                                <p className="text-xs font-medium">{h.proyecto} <span className="font-normal text-muted-foreground">· {h.alineacion}</span></p>
+                                                {h.resultados.length > 0
+                                                    ? <ol className="list-decimal space-y-0.5 pl-5">{h.resultados.map((r, i) => <li key={i}>{r}</li>)}</ol>
+                                                    : <p className="text-xs text-muted-foreground">Sin resultados esperados.</p>}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
                             {(view.padreNombre || view.subProyectosCount > 0) && (
@@ -257,9 +279,13 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
                     </Card>
                 </TabsContent>
 
-                {/* Cronograma: cuándo y en qué orden */}
-                <TabsContent value="cronograma" className="mt-4">
-                    <ProyectoGantt actividades={view.actividades} responsables={responsables} personas={personas} />
+                {/* Actividades: cronograma (Gantt con pantalla completa) y, debajo, cada actividad con sus responsables y pesos */}
+                <TabsContent value="actividades" className="mt-4 flex flex-col gap-4">
+                    <ProyectoGantt actividades={view.actividades} responsables={responsables} personas={personas} titulo="Cronograma de actividades" />
+                    <div>
+                        <p className="mb-2 text-sm font-semibold">Actividades, responsables y pesos</p>
+                        <ActividadesCards actividades={view.actividades} responsables={responsables} personas={personas} />
+                    </div>
                 </TabsContent>
 
                 {/* Equipo: quién carga con qué */}
@@ -366,7 +392,7 @@ export default function RevisionProyecto({ view, responsables, personas, procesa
                     <Button variant="outline" className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive" disabled={procesando || sinEstados} onClick={() => setConfirmar('rechazar')}>
                         <X className="mr-2 h-4 w-4" /> Rechazar
                     </Button>
-                    <Button className="bg-green-600 hover:bg-green-700" disabled={procesando || sinEstados} onClick={() => setConfirmar('aprobar')}>
+                    <Button className="bg-green-600 hover:bg-green-700" disabled={procesando || sinEstados} onClick={() => (pedirEvaluacion ? onResolver(true) : setConfirmar('aprobar'))}>
                         {procesando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
                         Aprobar
                     </Button>

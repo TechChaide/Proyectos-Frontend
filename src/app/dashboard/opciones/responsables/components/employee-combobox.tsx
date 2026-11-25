@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import { useListaNavegable } from '@/hooks/use-lista-navegable';
 import type { FichaSocialHistorica } from '@/types/interfaces';
 
 interface EmployeeComboboxProps {
@@ -64,6 +65,11 @@ export default function EmployeeCombobox({ value, personas, onChange, disabled }
         setSearch("");
     };
 
+    // Teclado: ↑/↓ y Enter para elegir sin hacer clic.
+    const planas = useMemo(() => groupedPersonas.flatMap((g) => g.items), [groupedPersonas]);
+    const { activo, onKeyDown, refActivo } = useListaNavegable(planas, handleSelect, search);
+    const indiceDe = useMemo(() => new Map(planas.map((p, i) => [p.CODIGO, i])), [planas]);
+
     return (
         <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
@@ -90,6 +96,7 @@ export default function EmployeeCombobox({ value, personas, onChange, disabled }
                         placeholder="Buscar por código, nombre o departamento..."
                         value={search}
                         onChange={e => setSearch(e.target.value)}
+                        onKeyDown={onKeyDown}
                         className="h-10 border-0 shadow-none focus-visible:ring-0 px-0"
                         autoFocus
                     />
@@ -108,10 +115,12 @@ export default function EmployeeCombobox({ value, personas, onChange, disabled }
                                     <button
                                         type="button"
                                         key={persona.CODIGO}
+                                        ref={indiceDe.get(persona.CODIGO) === activo ? refActivo : undefined}
                                         onClick={() => handleSelect(persona)}
                                         className={cn(
                                             "flex w-full items-center rounded-sm px-2 py-1.5 text-sm text-left hover:bg-accent hover:text-accent-foreground",
-                                            value === persona.CODIGO && "bg-accent/50"
+                                            value === persona.CODIGO && "bg-accent/50",
+                                            indiceDe.get(persona.CODIGO) === activo && "bg-accent text-accent-foreground"
                                         )}
                                     >
                                         <Check

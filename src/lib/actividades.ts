@@ -9,6 +9,13 @@
 //    asignaron (si todos tienen el mismo rango, se reparte en partes iguales).
 //  - El avance de la actividad padre es la suma de la participación de las subactividades cerradas.
 //  - La actividad padre es solo un contenedor: no se califica ni suma peso a nadie.
+//
+// SUBACTIVIDADES (2 niveles: actividad → subactividad). La misma autorreferencia guarda también las subactividades de
+// una actividad. Para distinguir los dos tipos de hijo, el gestor sigue una regla que él mismo hace cumplir:
+//  - Hijo con el MISMO nombre que su padre  → es la PARTICIPACIÓN de una persona en esa actividad.
+//  - Hijo con nombre PROPIO                 → es una SUBACTIVIDAD (que a su vez puede tener participaciones).
+// (Una subactividad no puede llamarse igual que su actividad: lo valida el formulario.) En todos los casos se califica
+// solo lo que no tiene hijos (las "hojas"); toda fila con hijos es un contenedor sin peso.
 
 import { differenceInCalendarDays } from 'date-fns';
 import type { Actividad } from '@/types/interfaces';
@@ -29,6 +36,71 @@ export function hijosPorPadre(actividades: Actividad[]): Map<number, Actividad[]
         map.set(a.codigo_actividad_padre, list);
     });
     return map;
+}
+
+const nombreNormalizado = (v: string) => (v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** ¿La fila hija es la participación de una persona en su padre (mismo nombre) y no una subactividad? */
+export function esParticipacion(hijo: Pick<Actividad, 'nombre_actividad'>, padre: Pick<Actividad, 'nombre_actividad'>): boolean {
+    return nombreNormalizado(hijo.nombre_actividad) === nombreNormalizado(padre.nombre_actividad);
+}
+
+/** Nodo del árbol de actividades: la fila, las participaciones de personas y sus subactividades. */
+export interface NodoActividad {
+    fila: Actividad;
+    /** Filas de participación (hijos con el mismo nombre). Vacío si la actividad es individual o contenedora de subactividades. */
+    participaciones: Actividad[];
+    subactividades: NodoActividad[];
+}
+
+const porInicio = (a: Actividad, b: Actividad) => aFechaSegura(a.fecha_inicio_actividad).getTime() - aFechaSegura(b.fecha_inicio_actividad).getTime();
+
+/** Árbol de actividades (raíces ordenadas por fecha de inicio), separando participaciones de subactividades. */
+export function arbolActividades(actividades: Actividad[]): NodoActividad[] {
+    const hijos = hijosPorPadre(actividades);
+    const nodo = (fila: Actividad): NodoActividad => {
+        const hs = hijos.get(fila.codigo_actividad) || [];
+        return {
+            fila,
+            participaciones: hs.filter((h) => esParticipacion(h, fila)),
+            subactividades: hs.filter((h) => !esParticipacion(h, fila)).sort(porInicio).map(nodo),
+        };
+    };
+    return actividadesPrincipales(actividades).sort(porInicio).map(nodo);
+}
+
+/** Subactividades (no participaciones) de cada actividad: codigo_actividad → subactividades. */
+export function subactividadesPorPadre(actividades: Actividad[]): Map<number, Actividad[]> {
+    const porCodigo = new Map(actividades.map((a) => [a.codigo_actividad, a]));
+    const res = new Map<number, Actividad[]>();
+    hijosPorPadre(actividades).forEach((hs, padre) => {
+        const fila = porCodigo.get(padre);
+        const subs = fila ? hs.filter((h) => !esParticipacion(h, fila)) : [];
+        if (subs.length) res.set(padre, subs.sort(porInicio));
+    });
+    return res;
+}
+
+/** Nombre a mostrar de una actividad evaluable: "Actividad › Subactividad" si pertenece a una subactividad. */
+export function rutaActividad(a: Actividad, actividades: Actividad[]): string {
+    const porCodigo = new Map(actividades.map((x) => [x.codigo_actividad, x]));
+    const partes: string[] = [];
+    let actual: Actividad | undefined = a;
+    let previo: Actividad | undefined;
+    for (let i = 0; actual && i < 5; i++) {
+        // Una fila de participación repite el nombre de su padre: no se repite en la ruta.
+        if (!previo || !esParticipacion(previo, actual)) partes.unshift(actual.nombre_actividad);
+        previo = actual;
+        actual = actual.codigo_actividad_padre ? porCodigo.get(actual.codigo_actividad_padre) : undefined;
+    }
+    return partes.join(' › ');
+}
+
+/** ¿La fila es la participación de una persona en una actividad compartida (y no una subactividad)? */
+export function esFilaDeParticipacion(a: Actividad, actividades: Actividad[]): boolean {
+    if (!a.codigo_actividad_padre) return false;
+    const padre = actividades.find((x) => x.codigo_actividad === a.codigo_actividad_padre);
+    return !!padre && esParticipacion(a, padre);
 }
 
 /** Actividades que se evalúan por persona: todas menos las contenedoras (las que tienen subactividades). */
@@ -64,16 +136,22 @@ export function participacionPorActividad(actividades: Actividad[]): Map<number,
     return resultado;
 }
 
-/** Avance (0-1) de cada actividad padre = suma de la participación de sus subactividades completadas. */
+/** Avance (0-1) de cada actividad padre = suma, por hijo, de su participación × su avance (1/0 si es hoja; el avance de
+ *  sus propios hijos si es contenedor: así una actividad con subactividades avanza según sus subactividades). */
 export function avancePorPadre(actividades: Actividad[], completadas: Set<number>): Map<number, number> {
     const participacion = participacionPorActividad(actividades);
+    const hijos = hijosPorPadre(actividades);
+    const memo = new Map<number, number>();
+    const avance = (codigo: number, profundidad = 0): number => {
+        const hs = hijos.get(codigo);
+        if (!hs?.length || profundidad > 5) return completadas.has(codigo) ? 1 : 0;
+        if (memo.has(codigo)) return memo.get(codigo)!;
+        const v = hs.reduce((s, h) => s + (participacion.get(h.codigo_actividad) || 0) * avance(h.codigo_actividad, profundidad + 1), 0);
+        memo.set(codigo, v);
+        return v;
+    };
     const resultado = new Map<number, number>();
-    hijosPorPadre(actividades).forEach((hijos, padre) => {
-        resultado.set(
-            padre,
-            hijos.reduce((s, h) => s + (completadas.has(h.codigo_actividad) ? participacion.get(h.codigo_actividad) || 0 : 0), 0)
-        );
-    });
+    hijos.forEach((_, padre) => resultado.set(padre, avance(padre)));
     return resultado;
 }
 

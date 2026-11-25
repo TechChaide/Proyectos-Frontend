@@ -29,7 +29,8 @@ import type { Actividad, Estado, EstadoActividad, Proyecto } from '@/types/inter
 import { estadoActividadService } from '@/services/proyectos/estadoActividad.service';
 import { actividadService } from '@/services/proyectos/actividad.service';
 import { useAuth } from '@/hooks/use-auth';
-import { fechaConHoraActualSQL, fechaISO } from '@/lib/fechas';
+import { fechaConHoraActualSQL, fechaISO, hoyEcuador } from '@/lib/fechas';
+import { DatePicker } from '@/components/ui/date-picker';
 
 // La fecha real elegida se guarda con la hora actual de Ecuador: así el cálculo de
 // cumplimiento usa la fecha real del hecho, no el momento en que alguien hizo el papeleo.
@@ -200,7 +201,7 @@ export default function EstadoActividadForm({ record, actividades, proyectos, es
                                 <FormItem>
                                     <FormLabel>Fecha real de este cambio</FormLabel>
                                     <FormControl>
-                                        <Input type="date" max={hoyISO()} {...field} />
+                                        <DatePicker value={field.value} onChange={field.onChange} maxDate={hoyEcuador()} />
                                     </FormControl>
                                     <p className="text-xs text-muted-foreground">
                                         La fecha en que la persona realmente completó (o cambió) la actividad — no la fecha en que tú la

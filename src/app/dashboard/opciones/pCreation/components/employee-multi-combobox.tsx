@@ -9,6 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import { useListaNavegable } from '@/hooks/use-lista-navegable';
 import type { FichaSocialHistorica } from '@/types/interfaces';
 
 const SEPARATOR = '&';
@@ -18,9 +19,11 @@ interface EmployeeMultiComboboxProps {
     personas: FichaSocialHistorica[];
     onChange: (value: string) => void;
     disabled?: boolean;
+    /** Cómo se nombra lo seleccionado en el botón (por defecto "responsable(s)"). */
+    etiquetaSeleccion?: string;
 }
 
-export default function EmployeeMultiCombobox({ value, personas, onChange, disabled }: EmployeeMultiComboboxProps) {
+export default function EmployeeMultiCombobox({ value, personas, onChange, disabled, etiquetaSeleccion = 'responsable(s)' }: EmployeeMultiComboboxProps) {
     const [open, setOpen] = useState(false);
     const [search, setSearch] = useState("");
 
@@ -79,6 +82,11 @@ export default function EmployeeMultiCombobox({ value, personas, onChange, disab
         onChange(next.join(SEPARATOR));
     };
 
+    // Teclado: ↑/↓ resaltan, Enter agrega (o quita) a la persona resaltada y deja listo el buscador para la siguiente.
+    const planas = useMemo(() => groupedPersonas.flatMap((g) => g.items), [groupedPersonas]);
+    const { activo, onKeyDown, refActivo } = useListaNavegable(planas, (p) => { toggleSelection(p); setSearch(''); }, search);
+    const indiceDe = useMemo(() => new Map(planas.map((p, i) => [p.CODIGO, i])), [planas]);
+
     const removeSelection = (codigo: string) => {
         onChange(selectedCodes.filter(c => c !== codigo).join(SEPARATOR));
     };
@@ -97,7 +105,7 @@ export default function EmployeeMultiCombobox({ value, personas, onChange, disab
                     >
                         <span className={cn("truncate", selectedCodes.length === 0 && "text-muted-foreground")}>
                             {selectedCodes.length > 0
-                                ? `${selectedCodes.length} responsable(s) seleccionado(s)`
+                                ? `${selectedCodes.length} ${etiquetaSeleccion} seleccionado(s)`
                                 : "Seleccione uno o más empleados..."}
                         </span>
                         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -110,6 +118,7 @@ export default function EmployeeMultiCombobox({ value, personas, onChange, disab
                             placeholder="Buscar por código, nombre o departamento..."
                             value={search}
                             onChange={e => setSearch(e.target.value)}
+                            onKeyDown={onKeyDown}
                             className="h-10 border-0 shadow-none focus-visible:ring-0 px-0"
                             autoFocus
                         />
@@ -132,6 +141,7 @@ export default function EmployeeMultiCombobox({ value, personas, onChange, disab
                                                 role="option"
                                                 aria-selected={checked}
                                                 tabIndex={0}
+                                                ref={indiceDe.get(persona.CODIGO) === activo ? refActivo : undefined}
                                                 onClick={() => toggleSelection(persona)}
                                                 onKeyDown={(e) => {
                                                     if (e.key === 'Enter' || e.key === ' ') {
@@ -141,7 +151,8 @@ export default function EmployeeMultiCombobox({ value, personas, onChange, disab
                                                 }}
                                                 className={cn(
                                                     "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-left cursor-pointer hover:bg-accent hover:text-accent-foreground",
-                                                    checked && "bg-accent/50"
+                                                    checked && "bg-accent/50",
+                                                    indiceDe.get(persona.CODIGO) === activo && "bg-accent text-accent-foreground"
                                                 )}
                                             >
                                                 <Checkbox checked={checked} className="pointer-events-none" />

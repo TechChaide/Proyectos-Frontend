@@ -63,3 +63,29 @@ export function calcularPesosAutomaticos(actividades: ActividadWizardValues[]): 
 
     return pesos;
 }
+
+/** Tarea final del plan (lo que lleva participantes y peso): una actividad sin subactividades o una subactividad. */
+export interface TareaDelPlan {
+    /** Ruta en el formulario: "actividades.i" o "actividades.i.subactividades.k". */
+    ruta: string;
+    tarea: Pick<ActividadWizardValues, 'fecha_inicio_actividad' | 'fecha_fin_actividad' | 'participantes'>;
+}
+
+export function tareasDelPlan(actividades: ActividadWizardValues[]): TareaDelPlan[] {
+    return (actividades || []).flatMap((a, i) => {
+        const subs = a?.subactividades ?? [];
+        return subs.length
+            ? subs.map((s, k) => ({ ruta: `actividades.${i}.subactividades.${k}`, tarea: s }))
+            : [{ ruta: `actividades.${i}`, tarea: a }];
+    });
+}
+
+/** Pesos de todo el plan con subactividades: ruta del participante ("<ruta de la tarea>.participantes.j") → peso. Las
+ *  actividades contenedoras no llevan peso (sus participantes van en las subactividades). */
+export function calcularPesosDelPlan(actividades: ActividadWizardValues[]): Map<string, number> {
+    const tareas = tareasDelPlan(actividades);
+    const pesos = calcularPesosAutomaticos(tareas.map((t) => ({ ...t.tarea, codigo_actividad: 0, nombre_actividad: '', descripcion_actividad: '' }) as ActividadWizardValues));
+    const res = new Map<string, number>();
+    tareas.forEach((t, i) => (pesos[i] || []).forEach((peso, j) => res.set(`${t.ruta}.participantes.${j}`, peso)));
+    return res;
+}

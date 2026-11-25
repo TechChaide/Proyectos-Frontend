@@ -126,9 +126,9 @@ export default function StepArea({ form, areas, isLoading }: StepAreaProps) {
     return (
         <>
             <CardHeader>
-                <CardTitle>1. Definición de Proceso</CardTitle>
+                <CardTitle>Proceso Solicitante</CardTitle>
                 <CardDescription>
-                    Avanza de a un nivel: Macroproceso → Proceso (comunes a todas las regionales). Desde el Proceso es opcional afinar: Regional → Subproceso → Línea, Puesto o Tarea.
+                    Elige el proceso que solicita el proyecto, bajando nivel por nivel. Puedes seleccionarlo desde el segundo nivel; si necesitas más detalle, sigue bajando (la regional se elige a partir del tercer nivel).
                 </CardDescription>
             </CardHeader>
             <CardContent>

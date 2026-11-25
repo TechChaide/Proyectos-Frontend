@@ -160,6 +160,8 @@ export interface Solicitud {
   codigo_solicitud: number;
   /** Modelo v6: usuario solicitante de la solución. */
   usuario_solicitante_solucion: string;
+  /** Modelo v8: indicador (bit) de proyecto de caja. */
+  proyecto_caja: boolean;
   usuario_creacion: string;
   fecha_creacion: string | Date;
   estado: string;
@@ -269,6 +271,9 @@ export interface Resultado {
   evaluador_asignado: string;
   /** bit: si el resultado cumple lo propuesto. */
   cumple_propuesta: boolean;
+  /** Modelo v8: ventana de evaluación (se define al aprobar el proyecto; posterior al calendario de actividades). */
+  fecha_inicio_evaluacion?: string | Date | null;
+  fecha_fin_evaluacion?: string | Date | null;
   fecha_modificacion: string | Date;
   usuario_modificacion: string;
 }

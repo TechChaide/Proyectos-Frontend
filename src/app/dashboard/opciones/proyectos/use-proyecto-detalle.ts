@@ -9,6 +9,7 @@ import { resultadoService } from '@/services/proyectos/resultado.service';
 import { objetivoService } from '@/services/proyectos/objetivo.service';
 import { okrService } from '@/services/proyectos/okr.service';
 import { pilarEstrategicoService } from '@/services/proyectos/pilarEstrategico.service';
+import { proyectoService } from '@/services/proyectos/proyecto.service';
 
 const num = (s?: string) => { const n = parseFloat((s || '').replace(',', '.')); return Number.isNaN(n) ? 0 : n; };
 const norm = (v: string) => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -19,6 +20,14 @@ export interface RecursoFila {
     costo: number;
     valor: number;
     subtotal: number;
+}
+
+/** Resultados esperados de un proyecto hijo: el Proyecto Integrador no tiene resultados propios, reúne los de sus hijos. */
+export interface ResultadosDeHijo {
+    proyecto: string;
+    /** "Pilar › OKR" del hijo. */
+    alineacion: string;
+    resultados: string[];
 }
 
 export interface Alineacion {
@@ -32,7 +41,8 @@ export interface Alineacion {
 // resto igual se muestra.
 export function useProyectoDetalle(proyecto: Proyecto | null) {
     const [recursos, setRecursos] = useState<RecursoFila[]>([]);
-    const [resultadoEsperado, setResultadoEsperado] = useState('');
+    const [resultadosEsperados, setResultadosEsperados] = useState<string[]>([]);
+    const [resultadosHijos, setResultadosHijos] = useState<ResultadosDeHijo[]>([]);
     const [objetivos, setObjetivos] = useState<Objetivo[]>([]);
     const [alineacion, setAlineacion] = useState<Alineacion | null>(null);
     const [cargando, setCargando] = useState(false);
@@ -41,7 +51,7 @@ export function useProyectoDetalle(proyecto: Proyecto | null) {
 
     useEffect(() => {
         if (!codigoProyecto) {
-            setRecursos([]); setResultadoEsperado(''); setObjetivos([]); setAlineacion(null); setCargando(false);
+            setRecursos([]); setResultadosEsperados([]); setResultadosHijos([]); setObjetivos([]); setAlineacion(null); setCargando(false);
             return;
         }
         let cancelado = false;
@@ -54,6 +64,9 @@ export function useProyectoDetalle(proyecto: Proyecto | null) {
                 resultadoService.getAll(),
                 objetivoService.getByProyecto(codigoProyecto),
                 codigoOkr ? okrService.getById(codigoOkr) : Promise.resolve(null),
+                proyectoService.getAll(),
+                okrService.getAll(),
+                pilarEstrategicoService.getAll(),
             ]);
             if (cancelado) return;
             const datos = <T,>(r: PromiseSettledResult<{ data?: T[] }>): T[] => (r.status === 'fulfilled' ? (r.value.data || []) : []);
@@ -73,9 +86,32 @@ export function useProyectoDetalle(proyecto: Proyecto | null) {
                         return { nombre: rec?.nombre_recurso || '—', tipo: tipoMap.get(rec?.codigo_tipo_recurso ?? 0) || '', costo, valor, subtotal: costo * valor };
                     })
             );
-            const esperado = resultList.find((r) => r.codigo_proyecto === codigoProyecto && norm(r.categoria_resultado).includes('esper'));
-            setResultadoEsperado(esperado?.descripcion_resultado || '');
+            setResultadosEsperados(
+                resultList
+                    .filter((r) => r.codigo_proyecto === codigoProyecto && norm(r.categoria_resultado).includes('esper'))
+                    .map((r) => r.descripcion_resultado)
+            );
             setObjetivos(datos<Objetivo>(settled[4]).filter((o) => o.estado === 'A'));
+            // Proyecto Integrador: sus resultados esperados son los de sus hijos activos (se van sumando al crear cada hijo).
+            const hijos = datos<Proyecto>(settled[6]).filter((h) => h.codigo_padre === codigoProyecto && h.estado === 'A');
+            const okrList = datos<Okr>(settled[7]);
+            const pilarList = datos<PilarEstrategico>(settled[8]);
+            const alineacionDe = (codigoOkr: number | null) => {
+                const o = okrList.find((x) => x.codigo_okr === codigoOkr);
+                if (!o) return 'Sin OKR';
+                const pilar = pilarList.find((x) => x.codigo_pilar === o.codigo_pilar)?.nombre_pilar;
+                return pilar ? `${pilar} › ${o.nombre_okr}` : o.nombre_okr;
+            };
+            setResultadosHijos(
+                hijos
+                    .map((h) => ({
+                        proyecto: h.nombre_proyecto,
+                        alineacion: alineacionDe(h.codigo_okr),
+                        resultados: resultList
+                            .filter((r) => r.codigo_proyecto === h.codigo_proyecto && norm(r.categoria_resultado).includes('esper'))
+                            .map((r) => r.descripcion_resultado),
+                    }))
+            );
 
             const okr = settled[5].status === 'fulfilled' ? (settled[5].value?.data as Okr | undefined) : undefined;
             if (okr) {
@@ -95,5 +131,5 @@ export function useProyectoDetalle(proyecto: Proyecto | null) {
 
     const totalCosto = useMemo(() => recursos.reduce((s, r) => s + r.subtotal, 0), [recursos]);
 
-    return { recursos, totalCosto, resultadoEsperado, objetivos, alineacion, cargando };
+    return { recursos, totalCosto, resultadosEsperados, resultadosHijos, objetivos, alineacion, cargando };
 }

@@ -1,10 +1,10 @@
 
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useFieldArray, useWatch, type UseFormReturn } from 'react-hook-form';
 import { addDays, differenceInCalendarDays } from 'date-fns';
-import { AlertCircle, CalendarClock, Check, Link2, Pencil, Plus, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, CalendarClock, Check, CornerDownRight, Link2, ListTree, Pencil, Plus, Trash2, Users, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -16,9 +16,11 @@ import { cn } from '@/lib/utils';
 import { fechaISO } from '@/lib/fechas';
 import { acotarRango, planificarReprogramacion, type CambioReprogramado, type RangoFechas } from '@/lib/dependencias';
 import type { FichaSocialHistorica, Responsable } from '@/types/interfaces';
-import type { ActividadWizardValues, ProyectoWizardValues } from '../schema';
+import type { ActividadWizardValues, ProyectoWizardValues, SubactividadWizardValues } from '../schema';
 import { defaultActividad, defaultParticipante, parseLocalDate } from '../schema';
-import { calcularPesosAutomaticos } from '../peso-calculo';
+import { calcularPesosDelPlan } from '../peso-calculo';
+import SubactividadesPanel, { ModoActividadSelector, tareaCompleta, type ModoActividad } from './subactividades-panel';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import ActividadCard from './actividad-card';
 import GanttChart from './gantt-chart';
 import ReprogramacionDialog from './reprogramacion-dialog';
@@ -27,6 +29,8 @@ import ReprogramacionDialog from './reprogramacion-dialog';
 // en las compartidas, además las fechas de cada quien).
 const actividadCompleta = (a?: ActividadWizardValues): boolean => {
     if (!a) return false;
+    // Actividad dividida en subactividades: completa si tiene nombre y descripción y todas sus subactividades lo están.
+    if (a.subactividades?.length) return !!a.nombre_actividad?.trim() && !!a.descripcion_actividad?.trim() && a.subactividades.every((sub) => tareaCompleta(sub));
     if (!a.nombre_actividad?.trim() || !a.descripcion_actividad?.trim()) return false;
     if (!a.fecha_inicio_actividad || !a.fecha_fin_actividad) return false;
     const participantes = a.participantes || [];
@@ -54,9 +58,12 @@ interface StepActividadesProps {
     isLoading: boolean;
     /** Fechas originales del proyecto (solo en modo edición), para detectar desplazamientos. */
     editOriginalFechas?: { fecha_inicio: string; fecha_fin: string } | null;
+    /** Bloque que va antes del plan (proyecto hijo: descripción y objetivos del proyecto). */
+    bloqueSuperior?: React.ReactNode;
+    titulo?: string;
 }
 
-export default function StepActividades({ form, responsables, personas, isLoading, editOriginalFechas }: StepActividadesProps) {
+export default function StepActividades({ form, responsables, personas, isLoading, editOriginalFechas, bloqueSuperior, titulo }: StepActividadesProps) {
     const { fields, append, remove } = useFieldArray({
         control: form.control,
         name: 'actividades',
@@ -92,22 +99,21 @@ export default function StepActividades({ form, responsables, personas, isLoadin
     // Firma estable (fechas de cada actividad + responsable y fechas de cada participante) que
     // dispara el recálculo de pesos SOLO cuando algo relevante cambia, nunca por el propio
     // peso_actividad que este efecto escribe (evita un loop infinito).
+    const firmaTarea = (t?: { fecha_inicio_actividad?: string; fecha_fin_actividad?: string; participantes?: { codigo_responsable?: number; fecha_inicio_actividad?: string; fecha_fin_actividad?: string }[] }) =>
+        `${t?.fecha_inicio_actividad}|${t?.fecha_fin_actividad}|` +
+        (t?.participantes || []).map((p) => `${p?.codigo_responsable}:${p?.fecha_inicio_actividad}:${p?.fecha_fin_actividad}`).join(',');
     const firmaParaPeso = useMemo(() => {
         return (actividadesValues || [])
-            .map((a) => `${a?.fecha_inicio_actividad}|${a?.fecha_fin_actividad}|` +
-                (a?.participantes || []).map((p) => `${p?.codigo_responsable}:${p?.fecha_inicio_actividad}:${p?.fecha_fin_actividad}`).join(','))
+            .map((a) => firmaTarea(a) + '{' + (a?.subactividades || []).map((sub) => firmaTarea(sub)).join(';') + '}')
             .join(';;');
     }, [actividadesValues]);
 
+    // Pesos de todo el plan: se reparten entre las tareas finales (actividades sin subactividades y subactividades).
     useEffect(() => {
         const actuales = form.getValues('actividades') || [];
-        const pesos = calcularPesosAutomaticos(actuales);
-        pesos.forEach((pesosActividad, i) => {
-            pesosActividad.forEach((peso, j) => {
-                if (actuales[i]?.participantes?.[j]?.peso_actividad !== peso) {
-                    form.setValue(`actividades.${i}.participantes.${j}.peso_actividad`, peso);
-                }
-            });
+        calcularPesosDelPlan(actuales).forEach((peso, ruta) => {
+            const campo = `${ruta}.peso_actividad` as `actividades.${number}.participantes.${number}.peso_actividad`;
+            if (form.getValues(campo) !== peso) form.setValue(campo, peso);
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [firmaParaPeso]);
@@ -145,9 +151,54 @@ export default function StepActividades({ form, responsables, personas, isLoadin
     // se pasa, se recorta al fin del proyecto; si ya no cabe ningún día, se limpian las fechas.
     const desplazarActividad = (index: number, dias: number) => {
         const actividad = form.getValues(`actividades.${index}`);
+        // Con subactividades: se mueve la actividad (acotada al proyecto) y cada subactividad dentro de su nuevo rango.
+        if (actividad.subactividades?.length) {
+            const aIni = actividad.fecha_inicio_actividad ? shiftDateString(actividad.fecha_inicio_actividad, dias) : '';
+            const aFin = actividad.fecha_fin_actividad ? shiftDateString(actividad.fecha_fin_actividad, dias) : '';
+            const rangoAct = acotarRango(aIni, aFin, projectStart, projectEnd);
+            escribirActividad(index, rangoAct, dias);
+            const ai = parseLocalDate(rangoAct?.ini || '');
+            const af = parseLocalDate(rangoAct?.fin || '');
+            moverSubactividades(index, (sub) => {
+                const si = sub.fecha_inicio_actividad ? shiftDateString(sub.fecha_inicio_actividad, dias) : '';
+                const sf = sub.fecha_fin_actividad ? shiftDateString(sub.fecha_fin_actividad, dias) : '';
+                return { rango: rangoAct ? acotarRango(si, sf, ai, af) : null, trasladar: dias };
+            });
+            return;
+        }
         const ini = actividad.fecha_inicio_actividad ? shiftDateString(actividad.fecha_inicio_actividad, dias) : '';
         const fin = actividad.fecha_fin_actividad ? shiftDateString(actividad.fecha_fin_actividad, dias) : '';
         escribirActividad(index, acotarRango(ini, fin, projectStart, projectEnd), dias);
+    };
+
+    // Reescribe las fechas de cada subactividad de una actividad (y deja a sus participantes dentro de ellas).
+    const moverSubactividades = (
+        index: number,
+        calcular: (sub: SubactividadWizardValues) => { rango: RangoFechas | null; trasladar: number }
+    ) => {
+        const subs = form.getValues(`actividades.${index}.subactividades`) || [];
+        subs.forEach((sub, k) => {
+            const { rango, trasladar } = calcular(sub);
+            const r = rango ?? { ini: '', fin: '' };
+            const base = `actividades.${index}.subactividades.${k}` as const;
+            form.setValue(`${base}.fecha_inicio_actividad`, r.ini, opcionesSet);
+            form.setValue(`${base}.fecha_fin_actividad`, r.fin, opcionesSet);
+            const subIni = parseLocalDate(r.ini);
+            const subFin = parseLocalDate(r.fin);
+            (sub.participantes || []).forEach((pa, j) => {
+                let pr: RangoFechas | null;
+                if (!rango) pr = null;
+                else if (sub.participantes.length === 1) pr = r;
+                else {
+                    const pi = pa.fecha_inicio_actividad ? shiftDateString(pa.fecha_inicio_actividad, trasladar) : '';
+                    const pf = pa.fecha_fin_actividad ? shiftDateString(pa.fecha_fin_actividad, trasladar) : '';
+                    pr = acotarRango(pi, pf, subIni, subFin);
+                }
+                const v = pr ?? { ini: '', fin: '' };
+                form.setValue(`${base}.participantes.${j}.fecha_inicio_actividad`, v.ini, opcionesSet);
+                form.setValue(`${base}.participantes.${j}.fecha_fin_actividad`, v.fin, opcionesSet);
+            });
+        });
     };
 
     // Actividades con alguna fecha fuera del rango del proyecto (p. ej. tras cambiar las fechas del paso 2).
@@ -165,6 +216,14 @@ export default function StepActividades({ form, responsables, personas, isLoadin
     const ajustarAlProyecto = () => {
         fueraDeRango.forEach((i) => {
             const a = form.getValues(`actividades.${i}`);
+            if (a.subactividades?.length) {
+                const rangoAct = acotarRango(a.fecha_inicio_actividad, a.fecha_fin_actividad, projectStart, projectEnd);
+                escribirActividad(i, rangoAct);
+                const ai = parseLocalDate(rangoAct?.ini || '');
+                const af = parseLocalDate(rangoAct?.fin || '');
+                moverSubactividades(i, (sub) => ({ rango: rangoAct ? acotarRango(sub.fecha_inicio_actividad, sub.fecha_fin_actividad, ai, af) : null, trasladar: 0 }));
+                return;
+            }
             escribirActividad(i, acotarRango(a.fecha_inicio_actividad, a.fecha_fin_actividad, projectStart, projectEnd));
         });
     };
@@ -325,6 +384,44 @@ export default function StepActividades({ form, responsables, personas, isLoadin
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [firmaDependencias]);
 
+    // ----- Modo de la actividad: una sola tarea o con subactividades -----
+    const [confirmarSimple, setConfirmarSimple] = useState<number | null>(null);
+    const aDividida = (index: number) => {
+        const a = form.getValues(`actividades.${index}`);
+        // Lo ya cargado (responsables y sus fechas) pasa a la primera subactividad: no se pierde nada.
+        form.setValue(`actividades.${index}.subactividades`, [{
+            codigo_actividad: 0,
+            nombre_actividad: '',
+            descripcion_actividad: '',
+            fecha_inicio_actividad: a.fecha_inicio_actividad || '',
+            fecha_fin_actividad: a.fecha_fin_actividad || '',
+            participantes: a.participantes?.length ? a.participantes : [{ ...defaultParticipante }],
+        }], opcionesSet);
+        form.setValue(`actividades.${index}.participantes`, [], opcionesSet);
+    };
+    // Vuelve a una sola tarea: conserva los responsables de la subactividad indicada (o de la primera), acotados a la actividad.
+    const volverASimple = (index: number, base?: SubactividadWizardValues) => {
+        const a = form.getValues(`actividades.${index}`);
+        const sub = base ?? a.subactividades?.[0];
+        const ai = parseLocalDate(a.fecha_inicio_actividad);
+        const af = parseLocalDate(a.fecha_fin_actividad);
+        const partes = sub?.participantes?.length ? sub.participantes : [{ ...defaultParticipante }];
+        const participantes = partes.map((p) => {
+            const r = partes.length === 1
+                ? { ini: a.fecha_inicio_actividad, fin: a.fecha_fin_actividad }
+                : (acotarRango(p.fecha_inicio_actividad, p.fecha_fin_actividad, ai, af) ?? { ini: '', fin: '' });
+            return { ...p, fecha_inicio_actividad: r.ini, fecha_fin_actividad: r.fin };
+        });
+        form.setValue(`actividades.${index}.participantes`, participantes, opcionesSet);
+        form.setValue(`actividades.${index}.subactividades`, [], opcionesSet);
+    };
+    const cambiarModo = (index: number, modo: ModoActividad) => {
+        if (modo === 'dividida') return aDividida(index);
+        const subs = form.getValues(`actividades.${index}.subactividades`) || [];
+        if (subs.length > 1) setConfirmarSimple(index);
+        else volverASimple(index);
+    };
+
     const handleAppend = () => {
         setOpenIndex(fields.length);
         append({ ...defaultActividad, participantes: [{ ...defaultParticipante }] });
@@ -417,11 +514,11 @@ export default function StepActividades({ form, responsables, personas, isLoadin
         <>
             <CardHeader className="flex flex-row items-start justify-between gap-4">
                 <div>
-                    <CardTitle>3. Definición de Actividades</CardTitle>
+                    <CardTitle>{titulo ?? 'Definición de Actividades'}</CardTitle>
                     <CardDescription>
                         {projectStart && projectEnd
                             ? `Agrega las actividades del proyecto. Deben ubicarse entre ${formatDisplay(projectStart)} y ${formatDisplay(projectEnd)}.`
-                            : 'Define las fechas del proyecto en el paso 2 para acotar las actividades a ese rango.'}
+                            : 'Define las fechas del proyecto en el paso "Proyecto" para acotar las actividades a ese rango.'}
                     </CardDescription>
                 </div>
                 <Button
@@ -435,6 +532,7 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                 </Button>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+                {bloqueSuperior}
                 {mostrarBannerDesplazamiento && (
                     <Alert>
                         <CalendarClock className="h-4 w-4" />
@@ -511,8 +609,8 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                                 const conError = !!erroresActividades?.[index];
                                 const enEdicion = actividadEnEdicion === index;
                                 return (
+                                    <Fragment key={item.id}>
                                     <TableRow
-                                        key={item.id}
                                         onClick={() => setOpenIndex(index)}
                                         className={cn(
                                             'cursor-pointer',
@@ -535,10 +633,17 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                                         </TableCell>
                                         <TableCell className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">{rangoFechas(a)}</TableCell>
                                         <TableCell className="max-w-[180px]">
-                                            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                                {(a?.participantes?.length || 0) > 1 && <Users className="h-3.5 w-3.5 shrink-0" />}
-                                                <span className="truncate">{resumenParticipantes(a)}</span>
-                                            </span>
+                                            {a?.subactividades?.length ? (
+                                                <span className="flex items-center gap-1.5 text-xs text-primary">
+                                                    <ListTree className="h-3.5 w-3.5 shrink-0" />
+                                                    {a.subactividades.length} subactividad(es)
+                                                </span>
+                                            ) : (
+                                                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                                    {(a?.participantes?.length || 0) > 1 && <Users className="h-3.5 w-3.5 shrink-0" />}
+                                                    <span className="truncate">{resumenParticipantes(a)}</span>
+                                                </span>
+                                            )}
                                         </TableCell>
                                         <TableCell className="max-w-[140px]">
                                             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -585,6 +690,28 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                                             </div>
                                         </TableCell>
                                     </TableRow>
+                                    {(a?.subactividades || []).map((sub, k) => (
+                                        <TableRow key={`${item.id}-s${k}`} onClick={() => setOpenIndex(index)} className={cn('cursor-pointer text-xs', enEdicion && 'bg-muted/40')}>
+                                            <TableCell />
+                                            <TableCell className="tabular-nums text-muted-foreground">{index + 1}.{k + 1}</TableCell>
+                                            <TableCell className="max-w-[220px]">
+                                                <span className="flex items-center gap-1.5 pl-2">
+                                                    <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                                    <span className={cn('truncate', !sub?.nombre_actividad?.trim() && 'text-muted-foreground')}>{sub?.nombre_actividad?.trim() || 'Sin definir'}</span>
+                                                </span>
+                                            </TableCell>
+                                            <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">{rangoFechas(sub as ActividadWizardValues)}</TableCell>
+                                            <TableCell className="max-w-[180px] text-muted-foreground"><span className="block truncate">{resumenParticipantes(sub as ActividadWizardValues)}</span></TableCell>
+                                            <TableCell />
+                                            <TableCell>
+                                                {tareaCompleta(sub)
+                                                    ? <span className="flex items-center gap-1 text-green-700"><Check className="h-3 w-3" /> Completa</span>
+                                                    : <span className="flex items-center gap-1 text-amber-700"><AlertCircle className="h-3 w-3" /> Falta completar</span>}
+                                            </TableCell>
+                                            <TableCell />
+                                        </TableRow>
+                                    ))}
+                                    </Fragment>
                                 );
                             })}
                         </TableBody>
@@ -633,10 +760,46 @@ export default function StepActividades({ form, responsables, personas, isLoadin
                                 opcionesDependencia={opcionesDependencia(actividadEnEdicion)}
                                 dependeDeIds={dependencias[fields[actividadEnEdicion].id] || []}
                                 onToggleDependeDe={(id) => toggleDependeDe(actividadEnEdicion, id)}
+                                contenedor={!!actividadesValues?.[actividadEnEdicion]?.subactividades?.length}
+                                selectorModo={
+                                    <ModoActividadSelector
+                                        modo={actividadesValues?.[actividadEnEdicion]?.subactividades?.length ? 'dividida' : 'simple'}
+                                        onCambiar={(m) => cambiarModo(actividadEnEdicion, m)}
+                                        disabled={isLoading}
+                                        sinFechas={!actividadesValues?.[actividadEnEdicion]?.fecha_inicio_actividad || !actividadesValues?.[actividadEnEdicion]?.fecha_fin_actividad}
+                                    />
+                                }
+                                pie={actividadesValues?.[actividadEnEdicion]?.subactividades?.length ? (
+                                    <SubactividadesPanel
+                                        form={form}
+                                        index={actividadEnEdicion}
+                                        responsables={responsables}
+                                        personas={personas}
+                                        isLoading={isLoading}
+                                        onSinSubactividades={(ultima) => volverASimple(actividadEnEdicion, ultima)}
+                                    />
+                                ) : undefined}
                             />
                         </CardContent>
                     </Card>
                 )}
+
+                <AlertDialog open={confirmarSimple !== null} onOpenChange={(o) => !o && setConfirmarSimple(null)}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>¿Volver a una sola tarea?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                                La actividad tiene {confirmarSimple !== null ? actividadesValues?.[confirmarSimple]?.subactividades?.length ?? 0 : 0} subactividades. Se eliminarán todas y la actividad conservará solo los responsables de la primera.
+                            </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel>Mantener subactividades</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => { if (confirmarSimple !== null) volverASimple(confirmarSimple); setConfirmarSimple(null); }}>
+                                Sí, una sola tarea
+                            </AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
 
                 <ReprogramacionDialog
                     abierto={!!pendiente}

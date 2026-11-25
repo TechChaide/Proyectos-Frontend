@@ -35,7 +35,7 @@ export interface GanttFila {
     /** Estado de la barra. "contenedor" = actividad padre con subactividades (muestra avance). */
     estado: EstadoVisual | 'contenedor';
     /** 0 = actividad, 1 = subactividad (participante). */
-    nivel?: 0 | 1;
+    nivel?: 0 | 1 | 2;
     /** Avance 0-1 (solo contenedores). */
     progreso?: number;
     /** Texto al final de la barra, p. ej. la participación "50%". */
@@ -67,6 +67,12 @@ interface GanttProps {
 
 const MS_DIA = 24 * 60 * 60 * 1000;
 const ANCHO_NOMBRES = 280;
+// La columna de nombres queda FIJA a la izquierda y el diagrama se desplaza por DEBAJO de ella: su fondo debe ser opaco
+// (color de la tarjeta + un tinte encima) para que las barras y los % nunca se vean a través de los nombres. Una sombra en
+// su borde derecho indica que hay contenido desplazándose por debajo.
+const FONDO_COLUMNA = 'hsl(var(--card))';
+const tinte = (alfa: number) => `linear-gradient(hsl(var(--muted) / ${alfa}), hsl(var(--muted) / ${alfa}))`;
+const SOMBRA_COLUMNA = '6px 0 8px -6px rgba(15, 23, 42, 0.28)';
 const ALTO_FILA = 44;
 const ALTO_BARRA = 20;
 const NAVY = '#1f3a5f';
@@ -349,7 +355,7 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                             <div style={{ width: ANCHO_NOMBRES + escala.anchoLinea, minWidth: '100%' }}>
                                 {/* Encabezado: banda de meses/años + escala */}
                                 <div className="flex border-b bg-muted/40" style={{ borderColor: CUADRICULA }}>
-                                    <div className="sticky left-0 z-20 flex shrink-0 items-end border-r bg-muted/40 px-3 pb-2 text-xs font-medium text-muted-foreground backdrop-blur" style={{ width: ANCHO_NOMBRES, borderColor: CUADRICULA }}>
+                                    <div className="sticky left-0 z-30 flex shrink-0 items-end border-r px-3 pb-2 text-xs font-medium text-muted-foreground" style={{ width: ANCHO_NOMBRES, borderColor: CUADRICULA, backgroundColor: FONDO_COLUMNA, backgroundImage: tinte(0.6), boxShadow: SOMBRA_COLUMNA }}>
                                         Actividad
                                     </div>
                                     <div className="relative" style={{ width: escala.anchoLinea }}>
@@ -424,14 +430,14 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                         <div key={grupo.id}>
                                             {grupo.titulo && (
                                                 <div className="flex border-b bg-muted/20" style={{ borderColor: CUADRICULA, height: ALTO_TITULO_GRUPO }}>
-                                                    <div className="sticky left-0 z-10 flex shrink-0 items-center border-r bg-muted/20 px-3 backdrop-blur" style={{ width: ANCHO_NOMBRES, borderColor: CUADRICULA }}>
+                                                    <div className="sticky left-0 z-20 flex shrink-0 items-center border-r px-3" style={{ width: ANCHO_NOMBRES, borderColor: CUADRICULA, backgroundColor: FONDO_COLUMNA, backgroundImage: tinte(0.35), boxShadow: SOMBRA_COLUMNA }}>
                                                         <span className="line-clamp-1 rounded px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white" style={{ backgroundColor: NAVY }}>{grupo.titulo}</span>
                                                     </div>
                                                     <div style={{ width: escala.anchoLinea }} />
                                                 </div>
                                             )}
                                             {grupo.filas.map((fila, j) => {
-                                                const esSub = fila.nivel === 1;
+                                                const esSub = (fila.nivel ?? 0) >= 1;
                                                 const Icono = fila.estado === 'contenedor' ? Layers : ICONO_ESTADO[fila.estado];
                                                 const colorIcono = fila.color ?? (fila.estado === 'contenedor' ? TINTA_SECUNDARIA : ESTILO_ESTADO_VISUAL[fila.estado].color);
                                                 const enBloque = !!fila.bloque;
@@ -450,11 +456,15 @@ export default function Gantt({ grupos, titulo = 'Diagrama de Gantt', descripcio
                                                         style={estiloFila}
                                                     >
                                                         <div
-                                                            className={cn('sticky left-0 z-10 flex shrink-0 items-center gap-2 border-r bg-card group-hover:bg-muted/40', enBloque && 'bg-muted/20')}
+                                                            // Fondo opaco; el tinte del bloque y el del hover se aplican ENCIMA del color sólido.
+                                                            className="sticky left-0 z-20 flex shrink-0 items-center gap-2 border-r group-hover:[--tinte-fila:linear-gradient(hsl(var(--muted)/0.75),hsl(var(--muted)/0.75))]"
                                                             style={{
                                                                 width: ANCHO_NOMBRES,
                                                                 borderColor: CUADRICULA,
-                                                                paddingLeft: esSub ? 28 : 12,
+                                                                backgroundColor: FONDO_COLUMNA,
+                                                                backgroundImage: `var(--tinte-fila, ${enBloque ? tinte(0.3) : 'none'})`,
+                                                                boxShadow: SOMBRA_COLUMNA,
+                                                                paddingLeft: 12 + (fila.nivel ?? 0) * 16,
                                                                 borderLeft: enBloque ? `3px solid ${acento}` : undefined,
                                                             }}
                                                         >

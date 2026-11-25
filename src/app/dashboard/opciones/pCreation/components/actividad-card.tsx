@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useFieldArray, useWatch, type UseFormReturn } from 'react-hook-form';
+import { get, useFieldArray, useWatch, type FieldErrors, type UseFormReturn } from 'react-hook-form';
 import { addDays, differenceInCalendarDays } from 'date-fns';
 import { Check, Info, Link2, Plus, Trash2, UserMinus, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -18,9 +18,9 @@ import {
 import type { FichaSocialHistorica, Responsable } from '@/types/interfaces';
 import { cn } from '@/lib/utils';
 import { fechaISO } from '@/lib/fechas';
-import { planificarReprogramacion, type CambioReprogramado, type RangoFechas } from '@/lib/dependencias';
+import { acotarRango, planificarReprogramacion, type CambioReprogramado, type RangoFechas } from '@/lib/dependencias';
 import { MAX_PARTICIPANTES, participacionPorDuracion, porcentajesEnteros } from '@/lib/actividades';
-import { MAX_LEN_200, parseLocalDate, type ProyectoWizardValues } from '../schema';
+import { MAX_LEN_200, parseLocalDate, type ActividadWizardValues, type ProyectoWizardValues } from '../schema';
 import DateRangePicker from './date-range-picker';
 import ResponsableCombobox from './responsable-combobox';
 import ReprogramacionDialog from './reprogramacion-dialog';
@@ -55,10 +55,22 @@ interface ActividadCardProps {
     /** Ids de las actividades predecesoras seleccionadas ([] = ninguna). */
     dependeDeIds: string[];
     onToggleDependeDe: (id: string) => void;
+    /** Ruta en el formulario cuando no es una actividad de primer nivel (p. ej. "actividades.2.subactividades.0"). */
+    ruta?: string;
+    /** "Subactividad": cambia los textos y oculta las dependencias (solo existen entre actividades). */
+    etiqueta?: 'Actividad' | 'Subactividad';
+    /** Actividad dividida en subactividades: sus fechas se calculan solas y no lleva participantes propios. */
+    contenedor?: boolean;
+    /** Contenido que va al final de la tarjeta (las subactividades de una actividad). */
+    pie?: React.ReactNode;
+    /** Selector "una sola tarea / con subactividades" (solo actividades de primer nivel). */
+    selectorModo?: React.ReactNode;
 }
 
-export default function ActividadCard({ form, index, responsables, personas, isLoading, onRemove, canRemove, minDate, rangoLabel, sinEspacio, confirmarCambioRango, maxDate, opcionesDependencia, dependeDeIds, onToggleDependeDe }: ActividadCardProps) {
-    const base = `actividades.${index}` as const;
+export default function ActividadCard({ form, index, responsables, personas, isLoading, onRemove, canRemove, minDate, rangoLabel, sinEspacio, confirmarCambioRango, maxDate, opcionesDependencia, dependeDeIds, onToggleDependeDe, ruta, etiqueta = 'Actividad', contenedor = false, pie, selectorModo }: ActividadCardProps) {
+    // Una subactividad tiene la misma forma que una actividad: se trabaja sobre su ruta con los mismos campos.
+    const base = (ruta ?? `actividades.${index}`) as `actividades.${number}`;
+    const esSub = etiqueta === 'Subactividad';
     const { fields, append, remove } = useFieldArray({ control: form.control, name: `${base}.participantes` });
 
     const fechaInicio = useWatch({ control: form.control, name: `${base}.fecha_inicio_actividad` });
@@ -78,7 +90,7 @@ export default function ActividadCard({ form, index, responsables, personas, isL
     const actividadInicio = fechaInicio ? new Date(`${fechaInicio}T00:00:00`) : undefined;
     const actividadFin = fechaFin ? new Date(`${fechaFin}T00:00:00`) : undefined;
 
-    const errores = form.formState.errors.actividades?.[index];
+    const errores = get(form.formState.errors, base) as FieldErrors<ActividadWizardValues> | undefined;
     const fechaError = errores?.fecha_inicio_actividad ?? errores?.fecha_fin_actividad;
 
     // Colores para distinguir la parte de cada participante en el calendario.
@@ -92,6 +104,26 @@ export default function ActividadCard({ form, index, responsables, personas, isL
     const aplicarRangoActividad = (start: string, end: string) => {
         form.setValue(`${base}.fecha_inicio_actividad`, start, { shouldValidate: true, shouldDirty: true });
         form.setValue(`${base}.fecha_fin_actividad`, end, { shouldValidate: true, shouldDirty: true });
+        // Actividad con subactividades: cada subactividad (y sus participantes) queda dentro del nuevo rango; si ya no cabe
+        // ningún día, sus fechas se limpian para que el usuario las vuelva a elegir.
+        if (contenedor) {
+            const ini = parseLocalDate(start);
+            const fin = parseLocalDate(end);
+            const rutaSubs = `${base}.subactividades` as `actividades.${number}.subactividades`;
+            (form.getValues(rutaSubs) || []).forEach((sub, k) => {
+                const r = (start && end ? acotarRango(sub.fecha_inicio_actividad, sub.fecha_fin_actividad, ini, fin) : null) ?? { ini: '', fin: '' };
+                const b = `${rutaSubs}.${k}` as const;
+                form.setValue(`${b}.fecha_inicio_actividad`, r.ini, { shouldValidate: true, shouldDirty: true });
+                form.setValue(`${b}.fecha_fin_actividad`, r.fin, { shouldValidate: true, shouldDirty: true });
+                const si = parseLocalDate(r.ini);
+                const sf = parseLocalDate(r.fin);
+                (sub.participantes || []).forEach((p, j) => {
+                    const pr = sub.participantes.length === 1 ? r : (acotarRango(p.fecha_inicio_actividad, p.fecha_fin_actividad, si, sf) ?? { ini: '', fin: '' });
+                    form.setValue(`${b}.participantes.${j}.fecha_inicio_actividad`, pr.ini, { shouldDirty: true });
+                    form.setValue(`${b}.participantes.${j}.fecha_fin_actividad`, pr.fin, { shouldDirty: true });
+                });
+            });
+        }
         if (fields.length === 1) {
             form.setValue(`${base}.participantes.0.fecha_inicio_actividad`, start, { shouldDirty: true });
             form.setValue(`${base}.participantes.0.fecha_fin_actividad`, end, { shouldDirty: true });
@@ -326,9 +358,9 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                     name={`${base}.nombre_actividad`}
                     render={({ field }) => (
                         <FormItem className="min-w-[200px] lg:flex-[3]">
-                            <FormLabel>Nombre de la Actividad</FormLabel>
+                            <FormLabel>Nombre de la {etiqueta}</FormLabel>
                             <FormControl>
-                                <Input placeholder="Ej: Levantamiento de requerimientos" maxLength={MAX_LEN_200} {...field} />
+                                <Input placeholder={esSub ? 'Ej: Configurar el servidor' : 'Ej: Levantamiento de requerimientos'} maxLength={MAX_LEN_200} {...field} />
                             </FormControl>
                             <FormMessage />
                         </FormItem>
@@ -352,6 +384,7 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                             No queda lugar en el proyecto: su predecesora termina el último día. Quita la dependencia o amplía las fechas del proyecto.
                         </p>
                     )}
+                    {contenedor && <p className="text-xs text-muted-foreground">Sus subactividades deben quedar dentro de este rango.</p>}
                     {fechaError && <p className="text-sm font-medium text-destructive">{fechaError.message}</p>}
                 </FormItem>
                 <Button
@@ -361,8 +394,8 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                     className="shrink-0 text-destructive hover:text-destructive lg:mt-8"
                     onClick={onRemove}
                     disabled={!canRemove}
-                    aria-label="Eliminar actividad"
-                    title="Eliminar actividad"
+                    aria-label={`Eliminar ${etiqueta.toLowerCase()}`}
+                    title={`Eliminar ${etiqueta.toLowerCase()}`}
                 >
                     <Trash2 className="h-4 w-4" />
                 </Button>
@@ -375,7 +408,7 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                     <FormItem>
                         <FormLabel>Descripción</FormLabel>
                         <FormControl>
-                            <Textarea placeholder="Detalle de la actividad" maxLength={MAX_LEN_200} {...field} />
+                            <Textarea placeholder={`Detalle de la ${etiqueta.toLowerCase()}`} maxLength={MAX_LEN_200} {...field} />
                         </FormControl>
                         <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_200} caracteres</p>
                         <FormMessage />
@@ -383,6 +416,7 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                 )}
             />
 
+            {!esSub && (
             <div className="flex flex-col gap-1.5">
                 <label className="flex items-center gap-1.5 text-sm font-medium">
                     <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
@@ -423,7 +457,11 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                     </>
                 )}
             </div>
+            )}
 
+            {selectorModo}
+
+            {!contenedor && (
             <div className="rounded-md border bg-muted/20 p-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-medium">
@@ -582,11 +620,14 @@ export default function ActividadCard({ form, index, responsables, personas, isL
                 {esCompartida && (
                     <p className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground">
                         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        Actividad compartida: cada participante queda con su propia subactividad y se califica solo por su
-                        parte. La participación se reparte según los días asignados a cada uno.
+                        {etiqueta} compartida: cada participante se califica solo por su parte. La participación se reparte
+                        según los días asignados a cada uno.
                     </p>
                 )}
             </div>
+            )}
+
+            {pie}
         </div>
     );
 }

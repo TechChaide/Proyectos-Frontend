@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Building, CalendarRange, CheckCircle2, Clock, CornerDownRight, Edit, Flag, HelpCircle, ListChecks, Package, Target, User, XCircle } from 'lucide-react';
+import { Building, CalendarRange, CheckCircle2, Clock, CornerDownRight, Edit, Flag, HelpCircle, ListChecks, Package, Target, User, XCircle, FolderPlus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,7 +11,7 @@ import { actividadesPrincipales } from '@/lib/actividades';
 
 // Indicador visual del estado de la solicitud del proyecto: Pendiente de aprobación → Aprobado / Rechazado.
 const normalizar = (v: string) => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-function estiloEstadoSolicitud(nombre: string): { color: string; texto: string; Icono: typeof Clock; etiqueta: string } {
+export function estiloEstadoSolicitud(nombre: string): { color: string; texto: string; Icono: typeof Clock; etiqueta: string } {
     const n = normalizar(nombre);
     if (n.includes('pendiente') && n.includes('aprob')) return { color: '#fab219', texto: '#0b0b0b', Icono: Clock, etiqueta: nombre || 'Pendiente de aprobación' };
     if (n.includes('rechaz')) return { color: '#d03b3b', texto: '#ffffff', Icono: XCircle, etiqueta: nombre || 'Rechazado' };
@@ -25,11 +25,13 @@ interface ProyectoCardProps {
     onEdit?: () => void;
     onRecursos?: () => void;
     onObjetivos?: () => void;
+    /** Solo para Proyectos Integradores: agrega un proyecto hijo. */
+    onAgregarHijo?: () => void;
     onEstado?: () => void;
     mostrarArea?: boolean;
 }
 
-export default function ProyectoCard({ view, onViewDetail, onEdit, onRecursos, onObjetivos, onEstado, mostrarArea = false }: ProyectoCardProps) {
+export default function ProyectoCard({ view, onViewDetail, onEdit, onRecursos, onObjetivos, onAgregarHijo, onEstado, mostrarArea = false }: ProyectoCardProps) {
     const { proyecto, estadoSolicitudNombre, tipoProyectoNombre, actividades, padreNombre, subProyectosCount } = view;
     const estadoEstilo = estiloEstadoSolicitud(estadoSolicitudNombre);
 
@@ -100,6 +102,11 @@ export default function ProyectoCard({ view, onViewDetail, onEdit, onRecursos, o
                 {onRecursos && (
                     <Button variant="outline" size="icon" onClick={onRecursos} aria-label="Recursos del proyecto" title="Recursos del proyecto">
                         <Package className="h-4 w-4" />
+                    </Button>
+                )}
+                {onAgregarHijo && (
+                    <Button variant="outline" size="icon" onClick={onAgregarHijo} aria-label="Agregar proyecto hijo" title="Agregar proyecto hijo">
+                        <FolderPlus className="h-4 w-4" />
                     </Button>
                 )}
                 {onEdit && (

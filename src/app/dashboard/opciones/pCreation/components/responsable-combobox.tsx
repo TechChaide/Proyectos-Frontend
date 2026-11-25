@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import { useListaNavegable } from '@/hooks/use-lista-navegable';
 import type { FichaSocialHistorica, Responsable } from '@/types/interfaces';
 
 const norm = (v: string) => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -59,6 +60,9 @@ export default function ResponsableCombobox({ value, responsables, personaMap, e
         setSearch('');
     };
 
+    // Teclado: ↑/↓ y Enter para elegir sin hacer clic.
+    const { activo, onKeyDown, refActivo } = useListaNavegable(filtradas, (o) => elegir(o.codigo), search);
+
     return (
         <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setSearch(''); }}>
             <PopoverTrigger asChild>
@@ -87,6 +91,7 @@ export default function ResponsableCombobox({ value, responsables, personaMap, e
                         placeholder="Buscar por código o nombre..."
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
+                        onKeyDown={onKeyDown}
                         className="h-10 border-0 px-0 shadow-none focus-visible:ring-0"
                         aria-label="Buscar participante por código o nombre"
                         autoFocus
@@ -99,14 +104,16 @@ export default function ResponsableCombobox({ value, responsables, personaMap, e
                                 {opciones.length === 0 ? 'No hay responsables disponibles.' : 'Sin coincidencias.'}
                             </p>
                         ) : (
-                            filtradas.map((o) => (
+                            filtradas.map((o, i) => (
                                 <button
                                     type="button"
                                     key={o.codigo}
+                                    ref={i === activo ? refActivo : undefined}
                                     onClick={() => elegir(o.codigo)}
                                     className={cn(
                                         'flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground',
-                                        o.codigo === value && 'bg-accent/50'
+                                        o.codigo === value && 'bg-accent/50',
+                                        i === activo && 'bg-accent text-accent-foreground'
                                     )}
                                 >
                                     <Check className={cn('mt-0.5 h-4 w-4 shrink-0', o.codigo === value ? 'opacity-100' : 'opacity-0')} />

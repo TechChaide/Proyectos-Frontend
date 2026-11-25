@@ -1,37 +1,53 @@
 
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarRange, ChevronRight, CornerDownRight, Inbox, Search, User } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { FilterX, Inbox } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { EstadoSolicitud } from '@/types/interfaces';
+import type { EstadoSolicitud, Resultado } from '@/types/interfaces';
 import { estadoSolicitudService } from '@/services/proyectos/estadoSolicitud.service';
+import { resultadoService } from '@/services/proyectos/resultado.service';
 import { useProyectoViews } from '../proyectos/use-proyecto-views';
 import { sortProyectoViewsByHierarchy, type ProyectoView } from '../proyectos/types';
-import { actividadesPrincipales } from '@/lib/actividades';
-import { ahoraSQL, formatearFecha } from '@/lib/fechas';
-import { cn } from '@/lib/utils';
+import { ahoraSQL, fechaSQL } from '@/lib/fechas';
+import { nombreNivel } from '@/lib/procesoNiveles';
+import FilaProyecto, { COLUMNAS_FILA } from './fila-proyecto';
 import RevisionProyecto from './revision-proyecto';
+import AprobarDialog, { type DatosEvaluacion } from './aprobar-dialog';
+import { useDatosAprobacion } from './use-datos-aprobacion';
+import { cn } from '@/lib/utils';
 
 const normalize = (v: string): string => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const esPendiente = (nombre: string) => normalize(nombre).includes('pendiente') && normalize(nombre).includes('aprob');
 
-// Bandeja de aprobación: a la izquierda los proyectos cuya solicitud está "Pendiente de aprobación"; a la derecha
-// la revisión completa del seleccionado (objetivos, alineación estratégica, cronograma, equipo y recursos) con la
-// decisión de aprobar o rechazar (registra un nuevo estado_solicitud; sin motivo, según lo acordado).
+const TODOS = 'todos';
+const SIN_ALINEACION = 'sin';
+const FILTROS_INICIALES = { proceso: TODOS, pilar: TODOS, okr: TODOS, responsable: TODOS };
+
+// El proyecto guarda los códigos de sus responsables separados por '&'.
+const codigosResponsable = (v: ProyectoView): string[] => (v.proyecto.responsable_proyecto || '').split('&').map((c) => c.trim()).filter(Boolean);
+
+// Bandeja de aprobación: por defecto, la tabla de todos los proyectos pendientes de aprobación o rechazo. Cada fila
+// es una tarjeta (nombre, objetivos, responsable, estado y recursos) que se expande para revisar el proyecto completo
+// (actividades con responsables y pesos, Gantt, equipo, recursos) y decidir. La decisión registra un nuevo
+// estado_solicitud (sin motivo, según lo acordado).
 // NOTA: el control por perfil (quién puede aprobar) queda pendiente de definir con el analista.
 export default function AprobacionesPage() {
     const { user } = useAuth();
     const { toast } = useToast();
-    const { proyectoViews, estados, responsables, personas, isLoading, recargar } = useProyectoViews();
+    const { proyectoViews, areas, estados, responsables, personas, isLoading, recargar } = useProyectoViews();
+    const datos = useDatosAprobacion();
     const [procesando, setProcesando] = useState<number | null>(null);
-    const [seleccionado, setSeleccionado] = useState<number | null>(null);
-    const [busqueda, setBusqueda] = useState('');
-    const panelRef = useRef<HTMLDivElement>(null);
+    const [abierto, setAbierto] = useState<number | null>(null);
+    const [filtros, setFiltros] = useState(FILTROS_INICIALES);
+    // Proyecto que se está aprobando (pide evaluador y fechas de evaluación).
+    const [aprobando, setAprobando] = useState<ProyectoView | null>(null);
 
     const estadoAprobado = useMemo(
         () => estados.find((e) => e.estado === 'A' && normalize(e.nombre_estado).includes('aprob') && !normalize(e.nombre_estado).includes('pendiente')) || null,
@@ -47,37 +63,119 @@ export default function AprobacionesPage() {
         [proyectoViews]
     );
 
-    // Siempre hay un proyecto en revisión: si el seleccionado ya no está pendiente (se resolvió), pasa al primero.
-    useEffect(() => {
-        if (isLoading) return;
-        if (!pendientes.some((v) => v.proyecto.codigo_proyecto === seleccionado)) {
-            setSeleccionado(pendientes[0]?.proyecto.codigo_proyecto ?? null);
-        }
-    }, [isLoading, pendientes, seleccionado]);
+    // Pilar y OKR de un proyecto (por su codigo_okr).
+    const alineacionDe = (v: ProyectoView) => (v.proyecto.codigo_okr ? datos.okrs.get(v.proyecto.codigo_okr) : undefined);
 
-    // Bandeja filtrada por nombre, proceso o responsable (útil cuando hay muchas solicitudes).
+    const personaMap = useMemo(() => new Map(personas.map((p) => [p.CODIGO, p])), [personas]);
+    // El proyecto guarda solo los códigos: aquí se resuelven a los nombres de las personas (si no hay ficha, se muestra el código).
+    const nombresResponsables = (v: ProyectoView): string[] => codigosResponsable(v).map((c) => personaMap.get(c)?.NOMBRE || c);
+
+    // Procesos como árbol por niveles (Macroproceso → Proceso → Subproceso…): solo las ramas donde hay proyectos pendientes.
+    // Elegir un nivel incluye a todos los proyectos de sus niveles inferiores.
+    const arbolProcesos = useMemo(() => {
+        const porCodigo = new Map(areas.map((a) => [a.codigo_proceso, a]));
+        const tienePadre = (a: { codigo_proceso_padre: number | null }) => !!a.codigo_proceso_padre && porCodigo.has(a.codigo_proceso_padre);
+        const hijos = new Map<number, number[]>();
+        areas.forEach((a) => {
+            if (tienePadre(a)) hijos.set(a.codigo_proceso_padre!, [...(hijos.get(a.codigo_proceso_padre!) || []), a.codigo_proceso]);
+        });
+        const relevantes = new Set<number>();
+        pendientes.forEach((v) => {
+            let a = v.areaCodigo ? porCodigo.get(v.areaCodigo) : undefined;
+            for (let g = 0; a && g < 20; g++) {
+                relevantes.add(a.codigo_proceso);
+                a = a.codigo_proceso_padre ? porCodigo.get(a.codigo_proceso_padre) : undefined;
+            }
+        });
+        const nombre = (c: number) => porCodigo.get(c)?.nombre_proceso || '';
+        const opciones: { codigo: number; nombre: string; nivel: number }[] = [];
+        const recorrer = (codigo: number, nivel: number) => {
+            opciones.push({ codigo, nombre: nombre(codigo), nivel });
+            (hijos.get(codigo) || []).filter((h) => relevantes.has(h)).sort((x, y) => nombre(x).localeCompare(nombre(y))).forEach((h) => recorrer(h, nivel + 1));
+        };
+        areas
+            .filter((a) => relevantes.has(a.codigo_proceso) && !tienePadre(a))
+            .sort((x, y) => x.nombre_proceso.localeCompare(y.nombre_proceso))
+            .forEach((a) => recorrer(a.codigo_proceso, 0));
+        const descendientes = (codigo: number) => {
+            const res = new Set<number>([codigo]);
+            const pila = [codigo];
+            while (pila.length) (hijos.get(pila.pop()!) || []).forEach((h) => { if (!res.has(h)) { res.add(h); pila.push(h); } });
+            return res;
+        };
+        return { opciones, descendientes };
+    }, [areas, pendientes]);
+
+    // Opciones de pilar y OKR: solo lo que existe entre los proyectos pendientes.
+    const opciones = useMemo(() => {
+        const pilares = new Map<number, string>();
+        const okrs = new Map<number, { nombre: string; pilar: number }>();
+        let haySinAlineacion = false;
+        pendientes.forEach((v) => {
+            const a = v.proyecto.codigo_okr ? datos.okrs.get(v.proyecto.codigo_okr) : undefined;
+            if (!a) { haySinAlineacion = true; return; }
+            pilares.set(a.codigoPilar, a.pilar || `Pilar ${a.codigoPilar}`);
+            okrs.set(a.codigoOkr, { nombre: a.okr, pilar: a.codigoPilar });
+        });
+        return {
+            pilares: [...pilares.entries()].sort((a, b) => a[1].localeCompare(b[1])),
+            okrs: [...okrs.entries()].sort((a, b) => a[1].nombre.localeCompare(b[1].nombre)),
+            haySinAlineacion,
+        };
+    }, [pendientes, datos.okrs]);
+
+    // Responsables de los proyectos ya definidos: cada persona una sola vez, con su cantidad de proyectos pendientes.
+    const opcionesResponsable = useMemo(() => {
+        const cuenta = new Map<string, number>();
+        pendientes.forEach((v) => new Set(codigosResponsable(v)).forEach((c) => cuenta.set(c, (cuenta.get(c) || 0) + 1)));
+        return [...cuenta.entries()]
+            .map(([codigo, n]) => ({ codigo, n, nombre: personaMap.get(codigo)?.NOMBRE || codigo }))
+            .sort((a, b) => a.nombre.localeCompare(b.nombre));
+    }, [pendientes, personaMap]);
+
+    // El OKR solo se ofrece cuando ya se eligió un pilar.
+    const pilarElegido = filtros.pilar !== TODOS && filtros.pilar !== SIN_ALINEACION;
+    const okrsDisponibles = opciones.okrs.filter(([, o]) => String(o.pilar) === filtros.pilar);
+
+    const cambiar = (parcial: Partial<typeof FILTROS_INICIALES>) => setFiltros((f) => ({ ...f, ...parcial }));
+    const hayFiltros = JSON.stringify(filtros) !== JSON.stringify(FILTROS_INICIALES);
+
     const visibles = useMemo(() => {
-        const q = normalize(busqueda.trim());
-        if (!q) return pendientes;
-        return pendientes.filter((v) => normalize(`${v.proyecto.nombre_proyecto} ${v.areaNombre} ${v.proyecto.responsable_proyecto} ${v.usuarioCreacion}`).includes(q));
-    }, [pendientes, busqueda]);
+        const enProceso = filtros.proceso !== TODOS ? arbolProcesos.descendientes(Number(filtros.proceso)) : null;
+        return pendientes.filter((v) => {
+            if (enProceso && (!v.areaCodigo || !enProceso.has(v.areaCodigo))) return false;
+            const a = v.proyecto.codigo_okr ? datos.okrs.get(v.proyecto.codigo_okr) : undefined;
+            if (filtros.pilar === SIN_ALINEACION) { if (a) return false; }
+            else if (filtros.pilar !== TODOS && String(a?.codigoPilar) !== filtros.pilar) return false;
+            if (filtros.okr !== TODOS && String(a?.codigoOkr) !== filtros.okr) return false;
+            if (filtros.responsable !== TODOS && !codigosResponsable(v).includes(filtros.responsable)) return false;
+            return true;
+        });
+    }, [pendientes, filtros, datos.okrs, arbolProcesos]);
 
-    // En pantallas chicas la revisión queda debajo de la bandeja: al elegir un proyecto se baja a ella.
-    const seleccionar = (codigo: number) => {
-        setSeleccionado(codigo);
-        if (typeof window !== 'undefined' && window.innerWidth < 1024) {
-            requestAnimationFrame(() => panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-        }
-    };
-
-    const vistaSeleccionada: ProyectoView | null = pendientes.find((v) => v.proyecto.codigo_proyecto === seleccionado) ?? null;
     const faltanEstados = !estadoAprobado || !estadoRechazado;
 
-    const resolver = async (view: ProyectoView, aprobar: boolean) => {
+    const resolver = async (view: ProyectoView, aprobar: boolean, evaluacion?: DatosEvaluacion) => {
         const estado = aprobar ? estadoAprobado : estadoRechazado;
         if (!estado) return;
         setProcesando(view.proyecto.codigo_proyecto);
         try {
+            // Al aprobar se registran el evaluador y las fechas de evaluación (tabla resultado). Se guarda antes del
+            // estado para que un proyecto aprobado nunca quede sin evaluación definida.
+            if (aprobar && evaluacion) {
+                await resultadoService.save({
+                    codigo_resultado: 0,
+                    codigo_proyecto: view.proyecto.codigo_proyecto,
+                    categoria_resultado: 'Evaluación',
+                    descripcion_resultado: 'Pendiente de evaluación',
+                    evaluador_asignado: evaluacion.evaluador,
+                    cumple_propuesta: false,
+                    fecha_inicio_evaluacion: fechaSQL(evaluacion.inicio),
+                    fecha_fin_evaluacion: fechaSQL(evaluacion.fin),
+                    usuario_modificacion: user?.usuario || 'admin',
+                    fecha_modificacion: ahoraSQL(),
+                } as Resultado);
+            }
             await estadoSolicitudService.save({
                 codigo_estado_solicitud: 0,
                 codigo_estado: estado.codigo_estado,
@@ -90,6 +188,8 @@ export default function AprobacionesPage() {
                 title: aprobar ? 'Proyecto aprobado' : 'Proyecto rechazado',
                 description: `"${view.proyecto.nombre_proyecto}" quedó como ${estado.nombre_estado}.`,
             });
+            setAbierto(null);
+            setAprobando(null);
             recargar();
         } catch (error) {
             const mensaje = error instanceof Error ? error.message : 'Ocurrió un error inesperado.';
@@ -103,10 +203,12 @@ export default function AprobacionesPage() {
         <div className="flex flex-col gap-4 p-4 md:p-6">
             <Card>
                 <CardHeader>
-                    <CardTitle>Aprobaciones</CardTitle>
-                    <CardDescription>
-                        Revisa cada proyecto completo —qué busca, cómo se alinea a la estrategia, cuándo y quién lo ejecuta y cuánto cuesta— y luego apruébalo o recházalo.
-                    </CardDescription>
+                    <div className="space-y-1.5">
+                        <CardTitle>Aprobaciones</CardTitle>
+                        <CardDescription>
+                            Proyectos pendientes de aprobación o rechazo. Haz clic en uno para ver el proyecto completo: actividades, responsables, pesos y cronograma.
+                        </CardDescription>
+                    </div>
                 </CardHeader>
             </Card>
 
@@ -119,9 +221,8 @@ export default function AprobacionesPage() {
             )}
 
             {isLoading ? (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                    <Skeleton className="h-64 w-full rounded-lg lg:col-span-4" />
-                    <Skeleton className="h-96 w-full rounded-lg lg:col-span-8" />
+                <div className="flex flex-col gap-3">
+                    {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-28 w-full rounded-lg" />)}
                 </div>
             ) : pendientes.length === 0 ? (
                 <Card>
@@ -134,73 +235,131 @@ export default function AprobacionesPage() {
                     </CardContent>
                 </Card>
             ) : (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                    {/* Bandeja */}
-                    <Card className="lg:col-span-4 lg:self-start">
-                        <CardHeader className="gap-3 pb-3">
-                            <CardTitle className="text-base">
-                                Por revisar <span className="font-normal text-muted-foreground">({pendientes.length})</span>
-                            </CardTitle>
-                            {pendientes.length > 4 && (
-                                <div className="relative">
-                                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                                    <Input className="pl-8" placeholder="Buscar proyecto, proceso o persona…" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} aria-label="Buscar en la bandeja de aprobaciones" />
+                <section aria-label="Proyectos pendientes de aprobación" className="flex flex-col gap-2">
+                    <p className="text-sm text-muted-foreground">
+                        <strong className="text-foreground">{visibles.length}</strong> {visibles.length === 1 ? 'proyecto pendiente' : 'proyectos pendientes'}
+                        {visibles.length !== pendientes.length && ` de ${pendientes.length}`}
+                    </p>
+
+                    {/* Filtros */}
+                    <Card>
+                        <CardContent className="flex flex-col gap-3 p-4">
+                            <div className={cn('grid gap-3 sm:grid-cols-2', pilarElegido ? 'lg:grid-cols-4' : 'lg:grid-cols-3')}>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Proceso</Label>
+                                    <Select value={filtros.proceso} onValueChange={(v) => cambiar({ proceso: v })}>
+                                        <SelectTrigger aria-label="Filtrar por proceso"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value={TODOS}>Todos los procesos</SelectItem>
+                                            {arbolProcesos.opciones.map((o) => (
+                                                // La sangría y la etiqueta muestran el nivel: Macroproceso → Proceso → Subproceso…
+                                                <SelectItem key={o.codigo} value={String(o.codigo)} style={{ paddingLeft: 32 + o.nivel * 16 }}>
+                                                    {o.nombre} <span className="text-xs text-muted-foreground">· {nombreNivel(o.nivel)}</span>
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Pilar estratégico</Label>
+                                    <Select value={filtros.pilar} onValueChange={(v) => cambiar({ pilar: v, okr: TODOS })}>
+                                        <SelectTrigger aria-label="Filtrar por pilar"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value={TODOS}>Todos los pilares</SelectItem>
+                                            {opciones.pilares.map(([codigo, nombre]) => <SelectItem key={codigo} value={String(codigo)}>{nombre}</SelectItem>)}
+                                            {opciones.haySinAlineacion && <SelectItem value={SIN_ALINEACION}>Sin pilar ni OKR</SelectItem>}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                {pilarElegido && (
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">OKR <span className="font-normal text-muted-foreground">(opcional)</span></Label>
+                                        <Select value={filtros.okr} onValueChange={(v) => cambiar({ okr: v })}>
+                                            <SelectTrigger aria-label="Filtrar por OKR"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value={TODOS}>Todos los OKR del pilar</SelectItem>
+                                                {okrsDisponibles.map(([codigo, o]) => <SelectItem key={codigo} value={String(codigo)}>{o.nombre}</SelectItem>)}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                )}
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Responsable</Label>
+                                    <Select value={filtros.responsable} onValueChange={(v) => cambiar({ responsable: v })}>
+                                        <SelectTrigger aria-label="Filtrar por responsable"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value={TODOS}>Todos los responsables</SelectItem>
+                                            {opcionesResponsable.map((r) => (
+                                                <SelectItem key={r.codigo} value={r.codigo}>
+                                                    {r.nombre} <span className="text-xs text-muted-foreground">· {r.n} {r.n === 1 ? 'proyecto' : 'proyectos'}</span>
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                            {hayFiltros && (
+                                <div className="flex justify-end">
+                                    <Button type="button" variant="ghost" size="sm" onClick={() => setFiltros(FILTROS_INICIALES)}>
+                                        <FilterX className="mr-2 h-4 w-4" /> Limpiar filtros
+                                    </Button>
                                 </div>
                             )}
-                        </CardHeader>
-                        <CardContent className="flex flex-col gap-1.5 lg:max-h-[75vh] lg:overflow-y-auto">
-                            {visibles.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">Ningún proyecto coincide con la búsqueda.</p>}
-                            {visibles.map((v) => {
-                                const p = v.proyecto;
-                                const activo = p.codigo_proyecto === seleccionado;
-                                const n = actividadesPrincipales(v.actividades).length;
-                                const esSub = !!v.padreNombre;
-                                return (
-                                    <button
-                                        key={p.codigo_proyecto}
-                                        type="button"
-                                        aria-pressed={activo}
-                                        onClick={() => seleccionar(p.codigo_proyecto)}
-                                        className={cn(
-                                            'flex w-full items-center gap-2 rounded-md border border-l-4 px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                                            activo ? 'border-l-primary bg-primary/5' : 'border-l-transparent hover:bg-muted/50',
-                                            esSub && 'ml-4'
-                                        )}
-                                    >
-                                        {esSub && <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-                                        <div className="min-w-0 flex-1">
-                                            <p className="truncate text-sm font-medium">{p.nombre_proyecto}</p>
-                                            <p className="truncate text-xs text-muted-foreground">{v.areaNombre}{v.tipoProyectoNombre ? ` · ${v.tipoProyectoNombre}` : ''}</p>
-                                            <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                                                <span className="flex items-center gap-1"><User className="h-3 w-3" />{p.responsable_proyecto || 'Sin responsable'}</span>
-                                                <span className="flex items-center gap-1"><CalendarRange className="h-3 w-3" />{formatearFecha(p.fecha_inicio)} – {formatearFecha(p.fecha_fin)}</span>
-                                                <span>{n} {n === 1 ? 'actividad' : 'actividades'}</span>
-                                            </p>
-                                            {v.usuarioCreacion && <p className="mt-0.5 text-[11px] text-muted-foreground">Solicitado por {v.usuarioCreacion}</p>}
-                                        </div>
-                                        <ChevronRight className={cn('h-4 w-4 shrink-0', activo ? 'text-primary' : 'text-muted-foreground/50')} />
-                                    </button>
-                                );
-                            })}
                         </CardContent>
                     </Card>
 
-                    {/* Revisión del proyecto seleccionado */}
-                    <div ref={panelRef} className="scroll-mt-4 lg:col-span-8">
-                        {vistaSeleccionada && (
-                            <RevisionProyecto
-                                key={vistaSeleccionada.proyecto.codigo_proyecto}
-                                view={vistaSeleccionada}
-                                responsables={responsables}
-                                personas={personas}
-                                procesando={procesando === vistaSeleccionada.proyecto.codigo_proyecto}
-                                sinEstados={faltanEstados}
-                                onResolver={(aprobar) => resolver(vistaSeleccionada, aprobar)}
-                            />
-                        )}
+                    {/* Encabezado de columnas (pantallas anchas) */}
+                    <div className={cn('hidden gap-x-4 px-4 text-[11px] font-medium uppercase tracking-wide text-muted-foreground lg:grid', COLUMNAS_FILA)}>
+                        <span className="pl-6">Proyecto, pilar y OKR</span>
+                        <span>Objetivo principal y secundarios</span>
+                        <span>Responsable</span>
+                        <span>Estado</span>
+                        <span>Recursos</span>
                     </div>
-                </div>
+
+                    {visibles.length === 0 ? (
+                        <p className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">Ningún proyecto coincide con los filtros.</p>
+                    ) : (
+                        visibles.map((v) => {
+                            const codigo = v.proyecto.codigo_proyecto;
+                            const expandido = abierto === codigo;
+                            return (
+                                <FilaProyecto
+                                    key={codigo}
+                                    view={v}
+                                    objetivos={datos.objetivos.get(codigo) || []}
+                                    recursos={datos.recursos.get(codigo) || []}
+                                    alineacion={alineacionDe(v)}
+                                    responsable={nombresResponsables(v)}
+                                    abierto={expandido}
+                                    onToggle={() => setAbierto(expandido ? null : codigo)}
+                                >
+                                    {/* Solo se monta (y carga sus datos) cuando la fila está expandida */}
+                                    <RevisionProyecto
+                                        view={v}
+                                        responsables={responsables}
+                                        personas={personas}
+                                        procesando={procesando === codigo}
+                                        sinEstados={faltanEstados}
+                                        // Todo proyecto (independiente, hijo o integrador) se aprueba definiendo sus evaluadores y fechas de evaluación.
+                                        onResolver={(aprobar) => (aprobar ? setAprobando(v) : resolver(v, aprobar))}
+                                        pedirEvaluacion
+                                        sinCabecera
+                                    />
+                                </FilaProyecto>
+                            );
+                        })
+                    )}
+                </section>
             )}
+
+            <AprobarDialog
+                view={aprobando}
+                personas={personas}
+                procesando={!!aprobando && procesando === aprobando.proyecto.codigo_proyecto}
+                onOpenChange={(o) => { if (!o) setAprobando(null); }}
+                onConfirmar={(datos) => aprobando && resolver(aprobando, true, datos)}
+            />
         </div>
     );
 }

@@ -1,12 +1,15 @@
 
 "use client";
 
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useWatch, type UseFormReturn } from 'react-hook-form';
 import type { FichaSocialHistorica, Okr, PilarEstrategico, Proyecto, TipoProyecto } from '@/types/interfaces';
+import { Compass, FileText, IdCard, Users } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import SeccionFormulario from './seccion-formulario';
 import EmployeeMultiCombobox from './employee-multi-combobox';
-import ObjetivosEditor from './objetivos-editor';
+import DescripcionObjetivos from './descripcion-objetivos';
+import ResultadosEditor from './resultados-editor';
 import DateRangePicker from './date-range-picker';
 import { aFecha, formatearFecha, hoyEcuador, limiteCalendario } from '@/lib/fechas';
 import { Textarea } from '@/components/ui/textarea';
@@ -25,14 +28,15 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { MAX_LEN_50, MAX_LEN_100, MAX_LEN_200, type ProyectoWizardValues } from '../schema';
+import { MAX_LEN_100, MAX_LEN_200, type ProyectoWizardValues } from '../schema';
 
 interface StepProyectoProps {
     form: UseFormReturn<ProyectoWizardValues>;
     tiposProyecto: TipoProyecto[];
     proyectosPadre: Proyecto[];
     /** Proceso (codigo_proceso) de cada posible proyecto padre, para exigir que hijo y padre sean de la misma proceso. */
-    areaPorProyectoPadre: Map<number, number | null>;
+    /** Ya no se usa: el padre no se elige en este paso. */
+    areaPorProyectoPadre?: Map<number, number | null>;
     personas: FichaSocialHistorica[];
     /** Catálogos de la vista "Pilares Estratégicos y OKR" (incluye inactivos para respetar lo ya asignado). */
     pilares: PilarEstrategico[];
@@ -40,12 +44,15 @@ interface StepProyectoProps {
     isLoading: boolean;
     /** En edición no se limita el inicio a hoy, para respetar proyectos que ya empezaron. */
     isEditMode?: boolean;
+    /** Hijo de un Proyecto Integrador que todavía no se guarda: nombre y fechas del integrador (el padre es la solicitud en curso). */
+    rangoPadre?: { inicio: string; fin: string; nombre: string };
+    /** Proyecto hijo de un integrador: responsables "de ejecución"; descripción y objetivos van en el paso de actividades. */
+    esHijo?: boolean;
 }
 
-export default function StepProyecto({ form, tiposProyecto, proyectosPadre, areaPorProyectoPadre, personas, pilares, okrs, isLoading, isEditMode = false }: StepProyectoProps) {
+export default function StepProyecto({ form, tiposProyecto, proyectosPadre, personas, pilares, okrs, isLoading, isEditMode = false, rangoPadre, esHijo = false }: StepProyectoProps) {
     const fechaInicio = useWatch({ control: form.control, name: 'fecha_inicio' });
     const fechaFin = useWatch({ control: form.control, name: 'fecha_fin' });
-    const codigoArea = useWatch({ control: form.control, name: 'codigo_proceso' });
     const codigoPadre = useWatch({ control: form.control, name: 'codigo_padre' });
     const codigoPilar = useWatch({ control: form.control, name: 'codigo_pilar' });
     const codigoOkr = useWatch({ control: form.control, name: 'codigo_okr' });
@@ -55,9 +62,9 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
     const pilaresOpciones = useMemo(() => {
         const okrActual = okrs.find((o) => o.codigo_okr === codigoOkr);
         return pilares
-            .filter((p) => p.estado === 'A' || p.codigo_pilar === okrActual?.codigo_pilar)
+            .filter((p) => p.estado === 'A' || p.codigo_pilar === okrActual?.codigo_pilar || p.codigo_pilar === codigoPilar)
             .sort((a, b) => a.nombre_pilar.localeCompare(b.nombre_pilar));
-    }, [pilares, okrs, codigoOkr]);
+    }, [pilares, okrs, codigoOkr, codigoPilar]);
     const okrsOpciones = useMemo(
         () => okrs
             .filter((o) => o.codigo_pilar === codigoPilar && (o.estado === 'A' || o.codigo_okr === codigoOkr))
@@ -75,39 +82,17 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
         }
     };
 
-    // Regla 1: solo pueden ser PADRE los proyectos de la MISMA proceso seleccionada en el paso 1.
-    const padresFiltrados = useMemo(
-        () => proyectosPadre.filter((p) => !codigoArea || areaPorProyectoPadre.get(p.codigo_proyecto) === codigoArea),
-        [proyectosPadre, areaPorProyectoPadre, codigoArea]
-    );
+    // El padre NO se elige aquí: un proyecto independiente no tiene padre y los hijos nacen dentro de un Proyecto
+    // Integrador. Un hijo (en el flujo del integrador, o ya guardado, o agregado a un integrador existente) muestra su
+    // padre en solo lectura y sus fechas quedan dentro de las del padre.
     const padreSel = useMemo(
         () => (codigoPadre ? proyectosPadre.find((p) => p.codigo_proyecto === codigoPadre) : undefined),
         [proyectosPadre, codigoPadre]
     );
-    const padreInicio = padreSel ? aFecha(padreSel.fecha_inicio) : null;
-    const padreFin = padreSel ? aFecha(padreSel.fecha_fin) : null;
-
-    // Si cambia el proceso y el padre elegido ya no pertenece a esa proceso, se limpia la selección de padre.
-    useEffect(() => {
-        if (codigoPadre && !padresFiltrados.some((p) => p.codigo_proyecto === codigoPadre)) {
-            form.setValue('codigo_padre', 0, { shouldValidate: true });
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [codigoArea]);
-
-    // Regla 2: las fechas del hijo deben quedar dentro del padre. Si al elegir padre las fechas actuales
-    // se salen de su rango, se limpian para que el usuario las vuelva a escoger dentro del padre.
-    useEffect(() => {
-        if (!padreInicio || !padreFin) return;
-        const fi = aFecha(fechaInicio);
-        const ff = aFecha(fechaFin);
-        const fuera = (fi && fi < padreInicio) || (ff && ff > padreFin) || (fi && fi > padreFin) || (ff && ff < padreInicio);
-        if (fuera) {
-            form.setValue('fecha_inicio', '', { shouldValidate: true });
-            form.setValue('fecha_fin', '', { shouldValidate: true });
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [codigoPadre]);
+    const padreInicio = rangoPadre ? aFecha(rangoPadre.inicio) : padreSel ? aFecha(padreSel.fecha_inicio) : null;
+    const padreFin = rangoPadre ? aFecha(rangoPadre.fin) : padreSel ? aFecha(padreSel.fecha_fin) : null;
+    const nombrePadre = rangoPadre?.nombre || padreSel?.nombre_proyecto || '';
+    const mostrarPadre = !!padreInicio && !!padreFin;
 
     const handleRangeChange = (start: string, end: string) => {
         form.setValue('fecha_inicio', start, { shouldValidate: true, shouldDirty: true });
@@ -131,10 +116,15 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
     return (
         <>
             <CardHeader>
-                <CardTitle>2. Definición de Proyecto</CardTitle>
-                <CardDescription>Registra las propiedades del proyecto.</CardDescription>
+                <CardTitle>Definición de Proyecto</CardTitle>
+                <CardDescription>
+                    {esHijo
+                        ? 'Qué es el proyecto, a qué se alinea, quién lo ejecuta y cuándo, y qué resultados se esperan. La descripción y los objetivos van en el siguiente paso, junto al plan de actividades.'
+                        : 'Qué es el proyecto, a qué se alinea, quién lo ejecuta y cuándo, para qué se hace y qué resultados se esperan.'}
+                </CardDescription>
             </CardHeader>
-            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <CardContent className="flex flex-col gap-4">
+                <SeccionFormulario icono={IdCard} numero={1} titulo="Identificación" ayuda={mostrarPadre ? 'El nombre del proyecto y el integrador al que pertenece.' : 'El nombre y el tipo del proyecto.'}>
                 <FormField
                     control={form.control}
                     name="nombre_proyecto"
@@ -150,42 +140,15 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                     )}
                 />
 
-                <FormField
-                    control={form.control}
-                    name="codigo_padre"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Proyecto Padre (opcional)</FormLabel>
-                            <Select
-                                onValueChange={(value) => field.onChange(Number(value))}
-                                value={field.value ? String(field.value) : '0'}
-                                disabled={isLoading}
-                            >
-                                <FormControl>
-                                    <SelectTrigger>
-                                        <SelectValue placeholder="Ninguno (proyecto independiente)" />
-                                    </SelectTrigger>
-                                </FormControl>
-                                <SelectContent>
-                                    <SelectItem value="0">Ninguno (proyecto independiente)</SelectItem>
-                                    {padresFiltrados.map((p) => (
-                                        <SelectItem key={p.codigo_proyecto} value={String(p.codigo_proyecto)}>
-                                            {p.nombre_proyecto}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                            <p className="text-xs text-muted-foreground">
-                                {!codigoArea
-                                    ? 'Elige primero el proceso (paso 1) para ver los posibles proyectos padre.'
-                                    : padresFiltrados.length === 0
-                                        ? 'No hay proyectos de este proceso que puedan ser padre.'
-                                        : 'Solo proyectos de la misma proceso. El hijo debe quedar dentro de las fechas del padre.'}
-                            </p>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
+                {mostrarPadre && (
+                    <FormItem>
+                        <FormLabel>{rangoPadre ? 'Proyecto Integrador' : 'Proyecto Padre'}</FormLabel>
+                        <Input value={nombrePadre} disabled readOnly />
+                        <p className="text-xs text-muted-foreground">
+                            Este proyecto forma parte de un Proyecto Integrador. Sus fechas deben quedar dentro de las del integrador.
+                        </p>
+                    </FormItem>
+                )}
 
                 <FormField
                     control={form.control}
@@ -216,6 +179,9 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                     )}
                 />
 
+                </SeccionFormulario>
+
+                <SeccionFormulario icono={Compass} numero={2} titulo="Alineación estratégica" ayuda="Primero el pilar; luego el OKR de ese pilar al que contribuye el proyecto.">
                 <FormItem>
                     <FormLabel>Pilar Estratégico</FormLabel>
                     <Select
@@ -241,6 +207,9 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                             ? 'Registra los pilares y sus OKR en Parámetros → Pilares Estratégicos.'
                             : 'Primero elige el pilar; luego el OKR al que se alinea el proyecto.'}
                     </p>
+                    {form.formState.errors.codigo_pilar && (
+                        <p className="text-sm font-medium text-destructive">{form.formState.errors.codigo_pilar.message}</p>
+                    )}
                 </FormItem>
 
                 <FormField
@@ -273,12 +242,15 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                     )}
                 />
 
+                </SeccionFormulario>
+
+                <SeccionFormulario icono={Users} numero={3} titulo="Ejecución" ayuda={mostrarPadre ? 'Quiénes lo ejecutan y en qué periodo (dentro del Proyecto Integrador).' : 'Quién lo dirige y en qué periodo se ejecuta.'}>
                 <FormField
                     control={form.control}
                     name="responsable_proyecto"
                     render={({ field }) => (
                         <FormItem>
-                            <FormLabel>Responsable del Proyecto</FormLabel>
+                            <FormLabel>{esHijo ? 'Responsable/s de Ejecución del Proyecto' : 'Responsable del Proyecto'}</FormLabel>
                             <FormControl>
                                 <EmployeeMultiCombobox
                                     value={field.value}
@@ -287,7 +259,7 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                                     disabled={isLoading}
                                 />
                             </FormControl>
-                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_50} caracteres</p>
+                            <p className="text-xs text-muted-foreground">{esHijo ? 'Quiénes ejecutan este proyecto. Puedes elegir más de uno.' : 'Puedes elegir más de un responsable.'}</p>
                             <FormMessage />
                         </FormItem>
                     )}
@@ -303,12 +275,12 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                             disabled={isLoading}
                             minDate={minDate}
                             maxDate={maxDate}
-                            rangoLabel={padreSel ? 'Dentro del proyecto padre' : 'Rango permitido'}
+                            rangoLabel={mostrarPadre ? 'Dentro del Proyecto Integrador' : 'Rango permitido'}
                         />
                     </FormControl>
                     <p className="text-xs text-muted-foreground">
-                        {padreSel && padreInicio && padreFin
-                            ? `Debe quedar dentro del proyecto padre "${padreSel.nombre_proyecto}" (${formatearFecha(padreInicio)} - ${formatearFecha(padreFin)}).`
+                        {mostrarPadre && padreInicio && padreFin
+                            ? `Debe quedar dentro del Proyecto Integrador "${nombrePadre}" (${formatearFecha(padreInicio)} - ${formatearFecha(padreFin)}).`
                             : `El proyecto y sus actividades pueden extenderse hasta el ${formatearFecha(limite)}.`}
                     </p>
                     {fechaError && (
@@ -316,52 +288,16 @@ export default function StepProyecto({ form, tiposProyecto, proyectosPadre, area
                     )}
                 </FormItem>
 
-                <FormField
-                    control={form.control}
-                    name="descripcion_proyecto"
-                    render={({ field }) => (
-                        <FormItem className="md:col-span-2">
-                            <FormLabel>Descripción del Proyecto</FormLabel>
-                            <FormControl>
-                                <Textarea placeholder="Describe el alcance del proyecto" maxLength={MAX_LEN_200} {...field} />
-                            </FormControl>
-                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_200} caracteres</p>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
+                </SeccionFormulario>
 
-                <FormField
-                    control={form.control}
-                    name="objetivo_principal"
-                    render={({ field }) => (
-                        <FormItem className="md:col-span-2">
-                            <FormLabel>Objetivo Principal</FormLabel>
-                            <FormControl>
-                                <Textarea placeholder="Describe el objetivo principal del proyecto" maxLength={MAX_LEN_200} {...field} />
-                            </FormControl>
-                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_200} caracteres</p>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
+                {/* En un proyecto hijo, la descripción y los objetivos se llenan en el paso de actividades. */}
+                {!esHijo && (
+                    <SeccionFormulario icono={FileText} numero={4} titulo="Descripción y objetivos" ayuda="Qué abarca el proyecto, para qué se hace y cómo se logra.">
+                        <DescripcionObjetivos form={form} />
+                    </SeccionFormulario>
+                )}
 
-                <ObjetivosEditor form={form} />
-
-                <FormField
-                    control={form.control}
-                    name="resultados_esperados"
-                    render={({ field }) => (
-                        <FormItem className="md:col-span-2">
-                            <FormLabel>Resultados Esperados (opcional)</FormLabel>
-                            <FormControl>
-                                <Textarea placeholder="¿Qué resultados se esperan de este proyecto?" maxLength={MAX_LEN_200} {...field} value={field.value ?? ''} />
-                            </FormControl>
-                            <p className="text-xs text-muted-foreground">{field.value?.length ?? 0}/{MAX_LEN_200} caracteres</p>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
+                <ResultadosEditor form={form} />
             </CardContent>
         </>
     );

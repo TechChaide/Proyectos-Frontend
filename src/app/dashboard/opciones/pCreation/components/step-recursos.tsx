@@ -65,10 +65,10 @@ export default function StepRecursos({ form, tiposRecurso, recursos, isLoading }
         <>
             <CardHeader className="flex flex-row items-start justify-between gap-4">
                 <div>
-                    <CardTitle>3. Recursos del Proyecto</CardTitle>
+                    <CardTitle>Recursos del Proyecto</CardTitle>
                     <CardDescription>
-                        Opcional. Asigna los recursos que usará el proyecto. El tipo se elige del catálogo
-                        administrado en Parámetros; el recurso puede ser uno existente o uno nuevo. El costo total se calcula como costo unitario × valor.
+                        Opcional. Asigna los recursos que usará el proyecto: elige el tipo y el recurso del catálogo
+                        (se administra en Parámetros) e indica la cantidad. El costo se calcula como costo unitario × cantidad.
                     </CardDescription>
                 </div>
                 <Button type="button" size="icon" className="shrink-0 rounded-full" onClick={() => append({ ...defaultRecursoProyecto })} aria-label="Agregar recurso">

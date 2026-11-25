@@ -2,31 +2,39 @@
 "use client";
 
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ClipboardCheck, FolderKanban } from 'lucide-react';
+import { ArrowLeft, ClipboardCheck } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { Proyecto, TipoProyecto, Resultado } from '@/types/interfaces';
+import type { Estado, EstadoSolicitud, FichaSocialHistorica, Okr, PilarEstrategico, Proyecto, Resultado, Solicitud, TipoProyecto } from '@/types/interfaces';
+import { okrService } from '@/services/proyectos/okr.service';
+import { pilarEstrategicoService } from '@/services/proyectos/pilarEstrategico.service';
 import { proyectoService } from '@/services/proyectos/proyecto.service';
 import { tipoProyectoService } from '@/services/proyectos/tipoProyecto.service';
 import { resultadoService } from '@/services/proyectos/resultado.service';
-import { RUBRICAS, sistemaDeTipo, type SistemaCalificacion } from '@/lib/rubricas';
+import { solicitudService } from '@/services/proyectos/solicitud.service';
+import { estadoService } from '@/services/proyectos/estado.service';
+import { estadoSolicitudService } from '@/services/proyectos/estadoSolicitud.service';
+import { serviciosService } from '@/services/proyectos/servicios.service';
+import { RUBRICAS, type SistemaCalificacion } from '@/lib/rubricas';
+import { construirArbolEvaluacion, puntajesDeProyecto, type NodoEvaluacion } from '@/lib/evaluacion-proyectos';
+import RubricaEvaluador, { type ResultadoParaVerificar } from './components/rubrica-evaluador';
+import TablaEvaluacion from './components/tabla-evaluacion';
+import { ahoraSQL } from '@/lib/fechas';
 
 // La calificación se guarda en la tabla `resultado` (una fila por criterio), con la categoría
 // marcada como "<TIPO>:<criterio>" (ej. "MR:calidad") para distinguirla de otros resultados.
 const marcadorCriterio = (sistema: string, criterio: string) => `${sistema}:${criterio}`;
-import RubricaEvaluador from './components/rubrica-evaluador';
-import { ahoraSQL, formatearFecha } from '@/lib/fechas';
 
-const MODULOS: { sistema: SistemaCalificacion; nombre: string; descripcion: string }[] = [
-    { sistema: 'MR', nombre: 'Mejoras Rápidas (MR)', descripcion: 'Rúbrica MR (5 criterios × 20%).' },
-    { sistema: 'MSP', nombre: 'Método Solución de Problemas (MSP)', descripcion: 'Rúbrica MSP (5 criterios × 20%).' },
-    { sistema: 'PI', nombre: 'Proyecto de Innovación (PI)', descripcion: 'Rúbrica PI (5 criterios × 20%).' },
-];
+const normalize = (v: string): string => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+// "Aprobado" (no "Pendiente de aprobación" ni "Rechazado").
+const esAprobado = (nombreEstado: string) => normalize(nombreEstado).includes('aprob') && !normalize(nombreEstado).includes('pendiente');
 
+// Modo de evaluación según el tipo de solicitud con que se creó el proyecto:
+//  - Independiente: su nota es la de su rúbrica (MR / MSP / PI), escala 0-5.
+//  - Integrador (proyecto de caja): promedio simple de la calificación de sus proyectos hijos, también sobre 5.
 export default function EvaluacionPage() {
     const { user } = useAuth();
     const { toast } = useToast();
@@ -34,25 +42,44 @@ export default function EvaluacionPage() {
     const [proyectos, setProyectos] = useState<Proyecto[]>([]);
     const [tiposProyecto, setTiposProyecto] = useState<TipoProyecto[]>([]);
     const [resultados, setResultados] = useState<Resultado[]>([]);
+    const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
+    const [estados, setEstados] = useState<Estado[]>([]);
+    const [estadosSolicitud, setEstadosSolicitud] = useState<EstadoSolicitud[]>([]);
+    const [personas, setPersonas] = useState<FichaSocialHistorica[]>([]);
+    const [okrs, setOkrs] = useState<Okr[]>([]);
+    const [pilares, setPilares] = useState<PilarEstrategico[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
 
+    // Proyecto que se está calificando con su rúbrica (solo independientes).
     const [sistema, setSistema] = useState<SistemaCalificacion | null>(null);
     const [proyecto, setProyecto] = useState<Proyecto | null>(null);
 
     const fetchData = async () => {
         setIsLoading(true);
-        const nombres = ['proyectos', 'tipos de proyecto', 'resultados'];
+        const nombres = ['proyectos', 'tipos de proyecto', 'resultados', 'solicitudes', 'estados', 'estados de solicitud', 'personas', 'OKR', 'pilares'];
         const results = await Promise.allSettled([
             proyectoService.getAll(),
             tipoProyectoService.getAll(),
             resultadoService.getAll(),
+            solicitudService.getAll(),
+            estadoService.getAll(),
+            estadoSolicitudService.getAll(),
+            serviciosService.getInformacionPersonas(),
+            okrService.getAll(),
+            pilarEstrategicoService.getAll(),
         ]);
         const asData = (r: PromiseSettledResult<{ data?: any[] }>) => (r.status === 'fulfilled' ? r.value : { data: [] });
-        const [proyRes, tiposRes, resultRes] = results.map(asData);
+        const [proyRes, tiposRes, resultRes, solRes, estRes, estSolRes, persRes, okrRes, pilarRes] = results.map(asData);
         setProyectos(proyRes.data || []);
         setTiposProyecto(tiposRes.data || []);
         setResultados(resultRes.data || []);
+        setSolicitudes(solRes.data || []);
+        setEstados(estRes.data || []);
+        setEstadosSolicitud(estSolRes.data || []);
+        setPersonas(persRes.data || []);
+        setOkrs(okrRes.data || []);
+        setPilares(pilarRes.data || []);
         const fallidos = results.map((r, i) => (r.status === 'rejected' ? nombres[i] : null)).filter(Boolean);
         if (fallidos.length) {
             toast({ title: 'Algunos datos no se cargaron', description: `No se pudieron cargar: ${fallidos.join(', ')}.`, variant: 'destructive' });
@@ -65,45 +92,58 @@ export default function EvaluacionPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const tipoMap = useMemo(() => new Map(tiposProyecto.map((t) => [t.codigo_tipo_proyecto, t.nombre_tipo_proyecto])), [tiposProyecto]);
-    const sistemaDe = (p: Proyecto): SistemaCalificacion | null => sistemaDeTipo(tipoMap.get(p.codigo_tipo_proyecto) || '');
-
-    const proyectosDelSistema = useMemo(
-        () => (sistema ? proyectos.filter((p) => p.estado === 'A' && sistemaDe(p) === sistema) : []),
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [proyectos, sistema, tipoMap]
-    );
-
-    const conteoPorSistema = useMemo(() => {
-        const map = new Map<SistemaCalificacion, number>();
-        proyectos.filter((p) => p.estado === 'A').forEach((p) => {
-            const s = sistemaDe(p);
-            if (s) map.set(s, (map.get(s) || 0) + 1);
+    // Árbol de proyectos activos con su calificación: integradores = promedio de hijos; independientes = su rúbrica.
+    const arbol = useMemo(() => {
+        const tipoNombre = new Map(tiposProyecto.map((t) => [t.codigo_tipo_proyecto, t.nombre_tipo_proyecto]));
+        const integrador = new Map(solicitudes.map((s) => [s.codigo_solicitud, !!s.proyecto_caja]));
+        // Solo se evalúan proyectos APROBADOS: el estado vigente de la solicitud es el último registrado.
+        const nombreEstado = new Map(estados.map((e) => [e.codigo_estado, e.nombre_estado]));
+        const ultimo = new Map<number, EstadoSolicitud>();
+        estadosSolicitud.filter((es) => es.estado === 'A').forEach((es) => {
+            const actual = ultimo.get(es.codigo_solicitud);
+            if (!actual || new Date(es.fecha_modificacion) > new Date(actual.fecha_modificacion)) ultimo.set(es.codigo_solicitud, es);
         });
-        return map;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [proyectos, tipoMap]);
+        const aprobado = (p: Proyecto) => {
+            const es = ultimo.get(p.codigo_solicitud);
+            return !!es && esAprobado(nombreEstado.get(es.codigo_estado) || '');
+        };
+        return construirArbolEvaluacion(proyectos.filter((p) => p.estado === 'A' && aprobado(p)), tipoNombre, integrador, resultados);
+    }, [proyectos, tiposProyecto, solicitudes, resultados, estados, estadosSolicitud]);
 
     const evaluadorDe = (p: Proyecto): string =>
         resultados.find((r) => r.codigo_proyecto === p.codigo_proyecto && r.evaluador_asignado)?.evaluador_asignado || '';
 
-    // Puntajes guardados del proyecto para la rúbrica del sistema actual (desde la tabla resultado).
-    const puntajesDe = (p: Proyecto): Record<string, number> => {
-        const res: Record<string, number> = {};
-        if (!sistema || sistema === 'INDIVIDUAL') return res;
-        const rub = RUBRICAS[sistema];
-        rub.criterios.forEach((c) => {
-            const cat = marcadorCriterio(rub.codigo, c.clave);
-            const row = resultados.find((r) => r.codigo_proyecto === p.codigo_proyecto && r.categoria_resultado === cat);
-            if (row) {
-                const v = parseInt(String(row.descripcion_resultado), 10);
-                if (!Number.isNaN(v)) res[c.clave] = v;
-            }
-        });
-        return res;
+    // Los evaluadores se guardan como códigos separados por '&' (o, en datos antiguos, como texto): se muestran con nombre.
+    const personaMap = useMemo(() => new Map(personas.map((p) => [p.CODIGO, p.NOMBRE])), [personas]);
+    const nombresEvaluadores = (crudo: string): string =>
+        crudo.split('&').map((c) => c.trim()).filter(Boolean).map((c) => personaMap.get(c) || c).join(', ');
+
+    // "Pilar › OKR" de un proyecto (el integrador muestra la de cada hijo).
+    const alineacionDe = (codigoOkr: number | null): string => {
+        const okr = okrs.find((o) => o.codigo_okr === codigoOkr);
+        if (!okr) return 'Sin OKR';
+        const pilar = pilares.find((p) => p.codigo_pilar === okr.codigo_pilar)?.nombre_pilar;
+        return pilar ? `${pilar} › ${okr.nombre_okr}` : okr.nombre_okr;
     };
 
-    const guardar = async (puntajes: Record<string, number>) => {
+    const iniciarEvaluacion = (nodo: NodoEvaluacion) => {
+        if (!nodo.sistema || nodo.sistema === 'INDIVIDUAL') return;
+        setSistema(nodo.sistema);
+        setProyecto(nodo.proyecto);
+    };
+
+    const cerrarEvaluacion = () => {
+        setProyecto(null);
+        setSistema(null);
+    };
+
+    // Resultados esperados de un proyecto (filas de resultado con categoría "Esperado"), en el orden en que se registraron.
+    const esperadosDe = (p: Proyecto): Resultado[] =>
+        resultados
+            .filter((r) => r.codigo_proyecto === p.codigo_proyecto && normalize(r.categoria_resultado || '').includes('esper'))
+            .sort((a, b) => a.codigo_resultado - b.codigo_resultado);
+
+    const guardar = async (puntajes: Record<string, number>, cumplimientos: Record<number, boolean>) => {
         if (!proyecto || !sistema || sistema === 'INDIVIDUAL') return;
         const rubrica = RUBRICAS[sistema];
         setIsSaving(true);
@@ -111,6 +151,8 @@ export default function EvaluacionPage() {
             const usuario = user?.usuario || 'admin';
             const now = ahoraSQL();
             const evaluador = evaluadorDe(proyecto) || usuario;
+            // Ventana de evaluación definida al aprobar el proyecto: se conserva en cada fila de calificación.
+            const ventana = resultados.find((r) => r.codigo_proyecto === proyecto.codigo_proyecto && r.fecha_inicio_evaluacion);
             const existentes = resultados.filter((r) => r.codigo_proyecto === proyecto.codigo_proyecto);
             for (const criterio of rubrica.criterios) {
                 const cat = marcadorCriterio(rubrica.codigo, criterio.clave);
@@ -126,12 +168,23 @@ export default function EvaluacionPage() {
                     descripcion_resultado: descripcion,
                     evaluador_asignado: evaluador,
                     cumple_propuesta: puntaje >= 3,
+                    fecha_inicio_evaluacion: ventana?.fecha_inicio_evaluacion ?? null,
+                    fecha_fin_evaluacion: ventana?.fecha_fin_evaluacion ?? null,
+                    usuario_modificacion: usuario,
+                    fecha_modificacion: now,
+                } as Resultado);
+            }
+            // Verificación de los resultados esperados: cumple_propuesta (bit) de cada fila "Esperado".
+            for (const esperado of esperadosDe(proyecto)) {
+                await resultadoService.save({
+                    ...esperado,
+                    cumple_propuesta: cumplimientos[esperado.codigo_resultado] ?? false,
                     usuario_modificacion: usuario,
                     fecha_modificacion: now,
                 } as Resultado);
             }
             toast({ title: 'Evaluación guardada', description: `Se guardó la calificación de "${proyecto.nombre_proyecto}".` });
-            setProyecto(null);
+            cerrarEvaluacion();
             fetchData();
         } catch (error) {
             const msg = error instanceof Error ? error.message : 'Ocurrió un error inesperado.';
@@ -141,12 +194,12 @@ export default function EvaluacionPage() {
         }
     };
 
-    // ── Vista: evaluando un proyecto ──
+    // ── Vista: calificando un proyecto independiente con su rúbrica ──
     if (proyecto && sistema && sistema !== 'INDIVIDUAL') {
         return (
             <div className="flex flex-col gap-4 p-4 md:p-6">
                 <div className="flex flex-wrap items-center gap-3">
-                    <Button variant="outline" size="sm" onClick={() => setProyecto(null)}>
+                    <Button variant="outline" size="sm" onClick={cerrarEvaluacion}>
                         <ArrowLeft className="mr-2 h-4 w-4" /> Volver
                     </Button>
                     <div>
@@ -158,8 +211,14 @@ export default function EvaluacionPage() {
                     <CardContent className="pt-6">
                         <RubricaEvaluador
                             rubrica={RUBRICAS[sistema]}
-                            evaluadorAsignado={evaluadorDe(proyecto)}
-                            puntajesIniciales={puntajesDe(proyecto)}
+                            evaluadorAsignado={nombresEvaluadores(evaluadorDe(proyecto))}
+                            puntajesIniciales={puntajesDeProyecto(resultados, proyecto.codigo_proyecto, sistema)}
+                            // Si el proyecto ya se calificó, la verificación guardada se muestra; si no, parte "sin verificar".
+                            resultadosEsperados={esperadosDe(proyecto).map((r): ResultadoParaVerificar => ({
+                                codigo: r.codigo_resultado,
+                                descripcion: r.descripcion_resultado,
+                                cumple: Object.keys(puntajesDeProyecto(resultados, proyecto.codigo_proyecto, sistema)).length > 0 ? !!r.cumple_propuesta : null,
+                            }))}
                             isSaving={isSaving}
                             onGuardar={guardar}
                         />
@@ -177,86 +236,27 @@ export default function EvaluacionPage() {
                         <ClipboardCheck className="h-5 w-5" />
                     </div>
                     <div>
-                        <CardTitle>Evaluación</CardTitle>
+                        <CardTitle>Evaluación de Proyectos</CardTitle>
                         <CardDescription>
-                            {sistema ? `Proyectos para calificar — ${MODULOS.find((m) => m.sistema === sistema)?.nombre}` : 'Elige el sistema de calificación según el tipo de proyecto.'}
+                            Un proyecto <strong>independiente</strong> se califica con su rúbrica (MR, MSP o PI). Un proyecto <strong>integrador</strong> se califica solo:
+                            es el promedio simple de la calificación de sus proyectos hijos, sobre 5. Expande una fila para ver el detalle.
                         </CardDescription>
                     </div>
                 </CardHeader>
             </Card>
 
             {isLoading ? (
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-28 w-full rounded-lg" />)}
+                <div className="flex flex-col gap-3">
+                    {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-16 w-full rounded-lg" />)}
                 </div>
-            ) : sistema === null ? (
-                // ── Landing: módulos por tipo ──
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    {MODULOS.map((m) => {
-                        const count = conteoPorSistema.get(m.sistema) || 0;
-                        return (
-                            <Card
-                                key={m.sistema}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => setSistema(m.sistema)}
-                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSistema(m.sistema); }}
-                                className="cursor-pointer transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            >
-                                <CardHeader className="space-y-2">
-                                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                                        <ClipboardCheck className="h-5 w-5" />
-                                    </div>
-                                    <CardTitle className="text-base">{m.nombre}</CardTitle>
-                                    <CardDescription className="text-xs">{m.descripcion}</CardDescription>
-                                </CardHeader>
-                                <CardContent>
-                                    <span className="text-sm text-muted-foreground">{count} proyecto{count === 1 ? '' : 's'}</span>
-                                </CardContent>
-                            </Card>
-                        );
-                    })}
-                </div>
+            ) : arbol.length === 0 ? (
+                <Card>
+                    <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                        No hay proyectos aprobados para evaluar. Los proyectos aparecen aquí cuando su solicitud es aprobada.
+                    </CardContent>
+                </Card>
             ) : (
-                <>
-                    <Button variant="outline" size="sm" className="w-fit" onClick={() => setSistema(null)}>
-                        <ArrowLeft className="mr-2 h-4 w-4" /> Volver a sistemas
-                    </Button>
-
-                    {proyectosDelSistema.length === 0 ? (
-                        <Card>
-                            <CardContent className="py-12 text-center text-sm text-muted-foreground">
-                                No hay proyectos activos de este tipo para calificar.
-                            </CardContent>
-                        </Card>
-                    ) : (
-                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                            {proyectosDelSistema.map((p) => {
-                                const yaCalificado = resultados.some((r) => r.codigo_proyecto === p.codigo_proyecto && (r.categoria_resultado || '').startsWith(`${sistema}:`));
-                                return (
-                                    <Card
-                                        key={p.codigo_proyecto}
-                                        role="button"
-                                        tabIndex={0}
-                                        onClick={() => setProyecto(p)}
-                                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setProyecto(p); }}
-                                        className="cursor-pointer transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                    >
-                                        <CardHeader className="space-y-2">
-                                            {yaCalificado && <Badge className="w-fit bg-green-600">Calificado</Badge>}
-                                            <CardTitle className="text-base leading-snug">{p.nombre_proyecto}</CardTitle>
-                                        </CardHeader>
-                                        <CardContent className="flex flex-col gap-1.5 text-xs text-muted-foreground">
-                                            <span className="flex items-center gap-1.5"><FolderKanban className="h-3.5 w-3.5" /> {p.responsable_proyecto || 'Sin responsable'}</span>
-                                            <span>{formatearFecha(p.fecha_inicio)} - {formatearFecha(p.fecha_fin)}</span>
-                                            <span>Evaluador: {evaluadorDe(p) || 'No asignado'}</span>
-                                        </CardContent>
-                                    </Card>
-                                );
-                            })}
-                        </div>
-                    )}
-                </>
+                <TablaEvaluacion arbol={arbol} resultados={resultados} onEvaluar={iniciarEvaluacion} nombresEvaluadores={nombresEvaluadores} alineacionDe={alineacionDe} />
             )}
         </div>
     );

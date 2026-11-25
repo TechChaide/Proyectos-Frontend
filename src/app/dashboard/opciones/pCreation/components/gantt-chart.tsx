@@ -48,35 +48,66 @@ export default function GanttChart({ actividades, responsables, personas, depend
         };
 
         const filas: GanttFila[] = [];
+        type Tarea = Pick<ActividadWizardValues, 'fecha_inicio_actividad' | 'fecha_fin_actividad' | 'participantes'>;
+        // Filas de una tarea (actividad sin subactividades o subactividad): una sola fila si es individual; si es
+        // compartida, una fila resumen y una por participante con su % de participación.
+        const agregarTarea = (t: Tarea, id: string, nombre: string, color: string, nivel: 0 | 1, bloqueExterno?: string, dependeDe?: string[]) => {
+            const participantes = (t.participantes || []).filter(Boolean);
+            if (participantes.length <= 1) {
+                const p = participantes[0];
+                filas.push({
+                    id, nombre, color, nivel, dependeDe, bloque: bloqueExterno,
+                    detalle: p?.codigo_responsable ? nombreDe(p.codigo_responsable) : 'Sin responsable',
+                    inicio: t.fecha_inicio_actividad,
+                    fin: t.fecha_fin_actividad,
+                    estado: 'pendiente',
+                });
+                return;
+            }
+            const participacion = porcentajesEnteros(participacionPorDuracion(
+                participantes.map((p) => ({ inicio: p.fecha_inicio_actividad || t.fecha_inicio_actividad, fin: p.fecha_fin_actividad || t.fecha_fin_actividad }))
+            ));
+            const bloque = bloqueExterno ?? `b${id}`;
+            filas.push({
+                id, nombre, color, nivel, dependeDe, bloque,
+                detalle: `${participantes.length} participantes`,
+                inicio: t.fecha_inicio_actividad,
+                fin: t.fecha_fin_actividad,
+                estado: 'contenedor',
+                progreso: 0,
+            });
+            participantes.forEach((p, j) => {
+                filas.push({
+                    id: `${id}p${j}`,
+                    nombre: p.codigo_responsable ? nombreDe(p.codigo_responsable) : 'Sin responsable',
+                    detalle: `Participación ${participacion[j]}%`,
+                    inicio: p.fecha_inicio_actividad || t.fecha_inicio_actividad,
+                    fin: p.fecha_fin_actividad || t.fecha_fin_actividad,
+                    estado: 'pendiente',
+                    nivel: (nivel + 1) as 1 | 2,
+                    bloque,
+                    color,
+                    etiquetaFin: `${participacion[j]}%`,
+                    tooltip: [`Participación en la actividad: ${participacion[j]}%`],
+                });
+            });
+        };
+
         (actividades || []).forEach((a, i) => {
             if (!a?.fecha_inicio_actividad || !a?.fecha_fin_actividad) return;
             const nombre = a.nombre_actividad?.trim() || `Actividad ${i + 1}`;
             const color = colorDeActividad(i);
-            const participantes = (a.participantes || []).filter(Boolean);
-
-            if (participantes.length <= 1) {
-                const p = participantes[0];
-                filas.push({
-                    id: `a${i}`,
-                    nombre,
-                    detalle: p?.codigo_responsable ? nombreDe(p.codigo_responsable) : 'Sin responsable',
-                    inicio: a.fecha_inicio_actividad,
-                    fin: a.fecha_fin_actividad,
-                    estado: 'pendiente',
-                    color,
-                    dependeDe: dependeDeDe(i),
-                });
+            const subs = (a.subactividades || []).filter((sub) => sub?.fecha_inicio_actividad && sub?.fecha_fin_actividad);
+            if (!a.subactividades?.length) {
+                agregarTarea(a, `a${i}`, nombre, color, 0, undefined, dependeDeDe(i));
                 return;
             }
-
-            const participacion = porcentajesEnteros(participacionPorDuracion(
-                participantes.map((p) => ({ inicio: p.fecha_inicio_actividad || a.fecha_inicio_actividad, fin: p.fecha_fin_actividad || a.fecha_fin_actividad }))
-            ));
+            // Actividad dividida en subactividades: barra resumen y, debajo, cada subactividad con sus participantes.
             const bloque = `b${i}`;
             filas.push({
                 id: `a${i}`,
                 nombre,
-                detalle: `${participantes.length} participantes`,
+                detalle: `${a.subactividades.length} subactividad(es)`,
                 inicio: a.fecha_inicio_actividad,
                 fin: a.fecha_fin_actividad,
                 estado: 'contenedor',
@@ -85,21 +116,7 @@ export default function GanttChart({ actividades, responsables, personas, depend
                 color,
                 dependeDe: dependeDeDe(i),
             });
-            participantes.forEach((p, j) => {
-                filas.push({
-                    id: `a${i}p${j}`,
-                    nombre: p.codigo_responsable ? nombreDe(p.codigo_responsable) : 'Sin responsable',
-                    detalle: `Participación ${participacion[j]}%`,
-                    inicio: p.fecha_inicio_actividad || a.fecha_inicio_actividad,
-                    fin: p.fecha_fin_actividad || a.fecha_fin_actividad,
-                    estado: 'pendiente',
-                    nivel: 1,
-                    bloque,
-                    color,
-                    etiquetaFin: `${participacion[j]}%`,
-                    tooltip: [`Participación en la actividad: ${participacion[j]}%`],
-                });
-            });
+            subs.forEach((sub, k) => agregarTarea(sub, `a${i}s${k}`, `${i + 1}.${k + 1} ${sub.nombre_actividad?.trim() || 'Subactividad'}`, color, 1, bloque));
         });
         return [{ id: 'plan', filas }];
     }, [actividades, responsables, personas, dependencias]);
@@ -108,7 +125,7 @@ export default function GanttChart({ actividades, responsables, personas, depend
         <Gantt
             grupos={grupos}
             titulo="Diagrama de Gantt"
-            descripcion="Vista previa del plan. Cada actividad tiene su propio color; las compartidas se muestran como un bloque con la participación de cada persona, y las dependencias conectan una actividad con la siguiente."
+            descripcion="Vista previa del plan. Cada actividad tiene su propio color; las que tienen subactividades o varios participantes se muestran como un bloque, y las dependencias conectan una actividad con la siguiente."
             vacio="Agrega actividades con fecha de inicio y fin para visualizar el diagrama de Gantt."
             mostrarAvance={false}
         />

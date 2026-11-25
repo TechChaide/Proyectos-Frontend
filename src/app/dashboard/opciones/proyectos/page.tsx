@@ -16,6 +16,7 @@ import ProyectoRecursosDialog from './components/proyecto-recursos-dialog';
 import ProyectoObjetivosDialog from './components/proyecto-objetivos-dialog';
 import EstadoProyectoDialog from './components/estado-proyecto-dialog';
 import type { Proyecto } from '@/types/interfaces';
+import type { Area } from '@/types/interfaces';
 import { useProyectoViews } from './use-proyecto-views';
 import { sortProyectoViewsByHierarchy, type AreaBlock, type ProyectoView } from './types';
 import { esResponsableDelProyecto, filtrarPorParticipacion } from './area-utils';
@@ -27,10 +28,23 @@ import { ESTILO_SISTEMA } from '@/lib/tipoProyectoVisual';
 const esRechazado = (view: ProyectoView): boolean =>
     (view.estadoSolicitudNombre || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().includes('rechaz');
 
+// Agrupación de los proyectos sin proceso (Proyectos Integradores).
+const SIN_PROCESO = -1;
+const AREA_INTEGRADORES: Area = {
+    codigo_proceso: SIN_PROCESO,
+    codigo_proceso_padre: null,
+    centro: '',
+    nombre_proceso: 'Proyectos Integradores',
+    correos_proceso: '',
+    estado: 'A',
+    fecha_modificacion: '',
+    usuario_modificacion: '',
+};
+
 export default function ProyectosPage() {
     const router = useRouter();
     const { user } = useAuth();
-    const { proyectoViews: todosLosProyectos, areas, responsables, personas, tiposProyecto, estados, isLoading, recargar } = useProyectoViews();
+    const { proyectoViews: todosLosProyectos, areas, responsables, personas, tiposProyecto, estados, solicitudes, isLoading, recargar } = useProyectoViews();
 
     const [selectedAreaCode, setSelectedAreaCode] = useState<number | null>(null);
     const [filter, setFilter] = useState('');
@@ -41,6 +55,9 @@ export default function ProyectosPage() {
     const [recursosProyecto, setRecursosProyecto] = useState<Proyecto | null>(null);
     const [objetivosProyecto, setObjetivosProyecto] = useState<Proyecto | null>(null);
     const [estadoView, setEstadoView] = useState<ProyectoView | null>(null);
+
+    // Proyectos Integradores (solicitud con proyecto_caja): a estos se les pueden agregar proyectos hijos.
+    const integradorPorSolicitud = useMemo(() => new Map(solicitudes.map((s) => [s.codigo_solicitud, !!s.proyecto_caja])), [solicitudes]);
 
     const proyectoViews = useMemo(
         () => filtrarPorParticipacion(todosLosProyectos, responsables, user),
@@ -93,31 +110,34 @@ export default function ProyectosPage() {
         setFilter('');
     };
 
+    // Los Proyectos Integradores no tienen proceso: se agrupan en un bloque propio para que no queden invisibles.
     const areaBlocks = useMemo<AreaBlock[]>(() => {
         const counts = new Map<number, number>();
         proyectoViewsVisibles.forEach((view) => {
-            if (view.areaCodigo === null) return;
-            counts.set(view.areaCodigo, (counts.get(view.areaCodigo) || 0) + 1);
+            const clave = view.areaCodigo ?? SIN_PROCESO;
+            counts.set(clave, (counts.get(clave) || 0) + 1);
         });
-        return areas
+        const bloques = areas
             .filter((area) => counts.has(area.codigo_proceso))
             .map((area) => ({ area, count: counts.get(area.codigo_proceso) || 0 }))
             .sort((a, b) => a.area.nombre_proceso.localeCompare(b.area.nombre_proceso));
+        const sinProceso = counts.get(SIN_PROCESO);
+        return sinProceso ? [...bloques, { area: AREA_INTEGRADORES, count: sinProceso }] : bloques;
     }, [areas, proyectoViewsVisibles]);
 
     const selectedArea = useMemo(
-        () => areas.find((a) => a.codigo_proceso === selectedAreaCode) || null,
+        () => (selectedAreaCode === SIN_PROCESO ? AREA_INTEGRADORES : areas.find((a) => a.codigo_proceso === selectedAreaCode) || null),
         [areas, selectedAreaCode]
     );
 
     // Cuántos rechazados hay en el proceso seleccionada (para el aviso del switch).
     const rechazadosEnArea = useMemo(
-        () => proyectoViews.filter((v) => v.areaCodigo === selectedAreaCode && esRechazado(v)).length,
+        () => proyectoViews.filter((v) => (v.areaCodigo ?? SIN_PROCESO) === selectedAreaCode && esRechazado(v)).length,
         [proyectoViews, selectedAreaCode]
     );
 
     const filteredViews = useMemo(() => {
-        const byArea = proyectoViewsVisibles.filter((view) => view.areaCodigo === selectedAreaCode);
+        const byArea = proyectoViewsVisibles.filter((view) => (view.areaCodigo ?? SIN_PROCESO) === selectedAreaCode);
         const f = filter.trim().toLowerCase();
         const matched = f ? byArea.filter((view) => view.proyecto.nombre_proyecto?.toLowerCase().includes(f)) : byArea;
         return sortProyectoViewsByHierarchy(matched);
@@ -241,6 +261,11 @@ export default function ProyectosPage() {
                                     onEdit={() => router.push(`/dashboard/opciones/pCreation?codigo_proyecto=${view.proyecto.codigo_proyecto}`)}
                                     onRecursos={() => setRecursosProyecto(view.proyecto)}
                                     onObjetivos={() => setObjetivosProyecto(view.proyecto)}
+                                    onAgregarHijo={
+                                        integradorPorSolicitud.get(view.proyecto.codigo_solicitud) && view.proyecto.estado === 'A' && !esRechazado(view)
+                                            ? () => router.push(`/dashboard/opciones/pCreation?integrador=${view.proyecto.codigo_proyecto}`)
+                                            : undefined
+                                    }
                                     onEstado={() => setEstadoView(view)}
                                 />
                             ))}

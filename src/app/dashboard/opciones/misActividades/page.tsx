@@ -62,7 +62,7 @@ import {
 } from './cumplimiento';
 import GaugeCumplimiento from './components/gauge-cumplimiento';
 import Gantt, { type GanttFila, type GanttGrupo } from '@/components/gantt/gantt';
-import { actividadesEvaluables, actividadesPrincipales, avancePorPadre, hijosPorPadre, participacionEnteraPorActividad } from '@/lib/actividades';
+import { actividadesEvaluables, actividadesPrincipales, avancePorPadre, esFilaDeParticipacion, esParticipacion, hijosPorPadre, participacionEnteraPorActividad, rutaActividad } from '@/lib/actividades';
 import AvanceProyectos from './components/avance-proyectos';
 import ProcesoSelector from '../proyectos/components/proceso-selector';
 import type { AreaBlock } from '../proyectos/types';
@@ -390,7 +390,8 @@ export default function MisActividadesPage() {
                 if (!porProyecto.has(a.codigo_proyecto)) {
                     porProyecto.set(a.codigo_proyecto, { id: `p${a.codigo_proyecto}`, titulo: r.proyectoNombre, filas: [] });
                 }
-                const compartida = !!a.codigo_actividad_padre;
+                // Participación de una persona en una actividad compartida (no una subactividad).
+                const compartida = esFilaDeParticipacion(a, activas);
                 const pct = participacionMap.get(a.codigo_actividad) ?? 100;
 
                 // En las compartidas, el tooltip explica la continuidad: con quién la compartes y
@@ -422,7 +423,8 @@ export default function MisActividadesPage() {
 
                 porProyecto.get(a.codigo_proyecto)!.filas.push({
                     id: String(a.codigo_actividad),
-                    nombre: a.nombre_actividad,
+                    // "Actividad › Subactividad" cuando pertenece a una subactividad.
+                    nombre: rutaActividad(a, activas),
                     detalle: compartida ? `Compartida · mi participación ${pct}%` : 'Individual',
                     inicio: a.fecha_inicio_actividad,
                     fin: a.fecha_fin_actividad,
@@ -433,7 +435,7 @@ export default function MisActividadesPage() {
             });
         return Array.from(porProyecto.values()).sort((a, b) => (a.titulo || '').localeCompare(b.titulo || ''));
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [rowsDelArea, participacionMap, hijosMap, responsableMap, personaMap]);
+    }, [rowsDelArea, participacionMap, hijosMap, responsableMap, personaMap, activas]);
 
     // Gantt del equipo (proyectos que lidero): cada actividad y, si es compartida, su avance y una fila
     // por participante con su % de participación y su propio estado.
@@ -466,28 +468,62 @@ export default function MisActividadesPage() {
             filas.push({
                 id: String(a.codigo_actividad),
                 nombre: a.nombre_actividad,
-                detalle: `${hijos.length} participantes`,
+                detalle: hijos.every((h) => esParticipacion(h, a)) ? `${hijos.length} participantes` : `${hijos.filter((h) => !esParticipacion(h, a)).length} subactividad(es)`,
                 inicio: a.fecha_inicio_actividad,
                 fin: a.fecha_fin_actividad,
                 estado: 'contenedor',
                 progreso: avance.get(a.codigo_actividad) || 0,
                 bloque,
             });
-            hijos.forEach((h) => {
+            // Fila de la participación de una persona (nivel 1 bajo la actividad, 2 bajo una subactividad).
+            const filaParticipacion = (h: typeof a, nivel: 1 | 2): GanttFila => {
                 const pct = participacionMap.get(h.codigo_actividad) ?? 0;
-                const fila: GanttFila = {
+                return {
                     id: String(h.codigo_actividad),
                     nombre: nombreResponsable(h.codigo_responsable),
                     detalle: `Participación ${pct}%`,
                     inicio: h.fecha_inicio_actividad,
                     fin: h.fecha_fin_actividad,
                     estado: estadosVisualesEquipo.get(h.codigo_actividad) || 'pendiente',
-                    nivel: 1,
+                    nivel,
                     bloque,
                     etiquetaFin: `${pct}%`,
-                    tooltip: [`Participación en la actividad: ${pct}%`],
+                    tooltip: [`Participación: ${pct}%`],
                 };
-                filas.push(fila);
+            };
+            hijos.forEach((h) => {
+                if (esParticipacion(h, a)) {
+                    filas.push(filaParticipacion(h, 1));
+                    return;
+                }
+                // Subactividad: individual (una fila) o compartida (resumen + sus participaciones).
+                const partes = (hijosMap.get(h.codigo_actividad) || []).filter((x) => esParticipacion(x, h));
+                if (partes.length === 0) {
+                    filas.push({
+                        id: String(h.codigo_actividad),
+                        nombre: h.nombre_actividad,
+                        detalle: `Subactividad · ${nombreResponsable(h.codigo_responsable)}`,
+                        inicio: h.fecha_inicio_actividad,
+                        fin: h.fecha_fin_actividad,
+                        estado: estadosVisualesEquipo.get(h.codigo_actividad) || 'pendiente',
+                        nivel: 1,
+                        bloque,
+                        tooltip: [`Subactividad de ${a.nombre_actividad}`, `Responsable: ${nombreResponsable(h.codigo_responsable)}`],
+                    });
+                    return;
+                }
+                filas.push({
+                    id: String(h.codigo_actividad),
+                    nombre: h.nombre_actividad,
+                    detalle: `Subactividad · ${partes.length} participantes`,
+                    inicio: h.fecha_inicio_actividad,
+                    fin: h.fecha_fin_actividad,
+                    estado: 'contenedor',
+                    progreso: avance.get(h.codigo_actividad) || 0,
+                    nivel: 1,
+                    bloque,
+                });
+                partes.forEach((x) => filas.push(filaParticipacion(x, 2)));
             });
         });
         return Array.from(porProyecto.values()).sort((a, b) => (a.titulo || '').localeCompare(b.titulo || ''));
@@ -797,13 +833,13 @@ export default function MisActividadesPage() {
                                         </DropdownMenu>
                                     )}
                                 </div>
-                                <CardTitle className="text-base leading-snug">{actividad.nombre_actividad}</CardTitle>
-                                {actividad.codigo_actividad_padre && (
+                                <CardTitle className="text-base leading-snug">{rutaActividad(actividad, activas)}</CardTitle>
+                                {esFilaDeParticipacion(actividad, activas) && (
                                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                                         <Users className="h-3.5 w-3.5 shrink-0" />
                                         <span>
                                             Actividad compartida · tu participación {participacionMap.get(actividad.codigo_actividad) ?? 0}%
-                                            {' '}({(hijosMap.get(actividad.codigo_actividad_padre) || []).length} participantes; se te califica solo por tu parte)
+                                            {' '}({(hijosMap.get(actividad.codigo_actividad_padre ?? 0) || []).length} participantes; se te califica solo por tu parte)
                                         </span>
                                     </div>
                                 )}

@@ -133,5 +133,5 @@ export function useProyectoViews() {
         });
     }, [proyectos, areas, areaSolicitudes, estados, estadoSolicitudes, tiposProyecto, actividades, solicitudes]);
 
-    return { proyectoViews, areas, responsables, personas, tiposProyecto, estados, isLoading, recargar };
+    return { proyectoViews, areas, responsables, personas, tiposProyecto, estados, solicitudes, isLoading, recargar };
 }
